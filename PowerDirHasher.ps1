@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.5.3"
+$scriptVersion = "0.5.4"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -616,7 +616,7 @@ function Get-MultipleFileHashes {
         return $results
     }
     catch {
-        Write-Error "Error processing $FilePath`: $_"
+        Write-Log "Error processing $FilePath`: $_"
         return $null
     }
     finally {
@@ -822,6 +822,7 @@ function Create-HashOutputFile {
         $commentHeader = @()
         $commentHeader += "# PowerDirHasher metadata"
         $commentHeader += "# Generated on: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC"
+        $commentHeader += "# PowerDirHasher version: $ScriptVersion"
         
         # Add HashTask or Folder info depending on the source
         if ($SourceType -eq "HashTask" -and -not [string]::IsNullOrEmpty($SourcePath)) {
@@ -858,7 +859,6 @@ function Create-HashOutputFile {
         $commentHeader += "# Symlinks skipped: $SymlinkCount"
         $algorithmsFormatted = $Algorithms -join " "
         $commentHeader += "# Hash algorithms used: $algorithmsFormatted"
-        $commentHeader += "# PowerDirHasher version: $ScriptVersion"
         
         # Convert results to CSV
         $csvContent = $Results | ConvertTo-Csv -NoTypeInformation
@@ -1311,25 +1311,28 @@ function Add-HashForFile {
     try {
         $longPath = Get-LongPath -Path $FilePath
         $fileInfo = Get-Item -LiteralPath $longPath
+        
         $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms
         
         if ($hashes) {
             # Create base result or copy from original
             if ($OriginalFileHash) {
                 $newHashResult = $OriginalFileHash.PSObject.Copy()
+                
+                # Update properties
+                $newHashResult.HashStatus = $Status
+                $newHashResult.FileSize = $fileInfo.Length
+                $newHashResult.ModificationDateUTC = $fileInfo.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                $newHashResult.Comments = $Comment
             } else {
-                $newHashResult = [PSCustomObject]@{}
+                $newHashResult = New-HashResult -FilePath $FilePath -FileInfo $fileInfo -Hashes $hashes -Status $Status -Comment $Comment -Algorithms $Algorithms
             }
             
-            # Update properties
-            $newHashResult.HashStatus = $Status
-            $newHashResult.FileSize = $fileInfo.Length
-            $newHashResult.ModificationDateUTC = $fileInfo.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
-            $newHashResult.Comments = $Comment
-            
-            # Add hash values
-            foreach ($algo in $Algorithms) {
-                $newHashResult.$algo = $hashes[$algo]
+            # Add hash values (only needed if OriginalFileHash is provided, as New-HashResult already adds them)
+            if ($OriginalFileHash) {
+                foreach ($algo in $Algorithms) {
+                    $newHashResult.$algo = $hashes[$algo]
+                }
             }
             
             return @{
@@ -1627,6 +1630,11 @@ function Get-PathFromUser {
         Write-Host "2. A .hashtask file containing a list of directories to process" -ForegroundColor Cyan
         $inputPath = Read-Host "Please enter the full path"
         
+        # Strip quotes only if they are at the beginning and end of the input path. This is useful when you drag a folder or file to the Terminal window
+        if ($inputPath.StartsWith('"') -and $inputPath.EndsWith('"') -and $inputPath.Length -gt 1) {
+            $inputPath = $inputPath.Substring(1, $inputPath.Length - 2)
+        }
+
         if (Test-ValidPath -Path $inputPath) {
             $validPath = $true
         } else {
@@ -1658,7 +1666,7 @@ function Find-LatestHashesFile {
         return $latestHashesFile
     }
     catch {
-        Write-Error "Error finding latest hashes file: $_"
+        Write-Log "Error finding latest hashes file: $_"
         return $null
     }
 }
@@ -1688,7 +1696,7 @@ function Read-HashesFile {
         return $hashesData
     }
     catch {
-        Write-Error "Error reading hashes file: $_"
+        Write-Log "Error reading hashes file: $_"
         return @()
     }
 }
@@ -1843,6 +1851,8 @@ function Find-NewFiles {
         $excludedCount = 0
         $errorCount = 0
         $processedCount = 0
+
+        $filesInHashesFoldersCount = 0
         
         Write-Log -Message "Found total of $totalFileCount files to check" -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
         
@@ -1870,11 +1880,13 @@ function Find-NewFiles {
             
             # Skip files in the hashes directory
             if ($normalizedFilePath.StartsWith($hashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
+                $filesInHashesFoldersCount++
                 continue
             }
 
             # Skip also the hashes directory for single files
             if ($normalizedFilePath.StartsWith($singleFilesHashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
+                $filesInHashesFoldersCount++
                 continue
             }
             
@@ -1915,10 +1927,13 @@ function Find-NewFiles {
             # Check if this is a new file
             
             if ($ExistingFilePaths -notcontains $normalizedFilePath) {
+
+                $newFileCount++
+
                 try {
                     # Add hash for the file
                     $result = Add-HashForFile -FilePath $file.FullName -Algorithms $Algorithms -Status "ADDED" -Comment ""
-                    
+
                     if (-not $result.IsError) {
                         # Update the FilePath property since Add-HashForFile doesn't set it
                         $result.HashResult.FilePath = $relativePath
@@ -1929,12 +1944,6 @@ function Find-NewFiles {
                             IsError = $false
                         }
                         
-                        $newFileCount++
-                        
-                        # Log periodically
-                        if ($newFileCount % 100 -eq 0) {
-                            Write-Log -Message "Found $newFileCount new files so far" -LogFilePath $LogFilePath -ForegroundColor Green -Status "ADDED" -IsPreviouslyAdded $false
-                        }
                     }
                     else {
                         # Create error result with appropriate logging
@@ -1957,10 +1966,13 @@ function Find-NewFiles {
                             IsError = $true
                         }
                         
-                        Write-Log -Message "Error calculating hash for new file: $relativePath" -LogFilePath $LogFilePath -ForegroundColor Red -Status "ADDED_ERROR" -Force $true
+                        $logError = $result.ErrorMessage
+
+                        Write-Log -Message "Error calculating hash for new file: $relativePath with error: $logError" -LogFilePath $LogFilePath -ForegroundColor Red -Status "ADDED_ERROR" -Force $true
 
                         $ErrorCount++
                     }
+
                 }
                 catch {
                     # Handle exceptions with appropriate logging
@@ -1987,6 +1999,12 @@ function Find-NewFiles {
 
                     $ErrorCount++
                 }
+                
+                # Log periodically
+                if ($newFileCount % 100 -eq 0) {
+                    Write-Log -Message "Found $newFileCount new files so far" -LogFilePath $LogFilePath -ForegroundColor Green -Status "ADDED" -IsPreviouslyAdded $false
+                }
+
             }
         }
         
@@ -1998,6 +2016,7 @@ function Find-NewFiles {
         }
         
         Write-Log -Message "Found $newFileCount new files that were added" -LogFilePath $LogFilePath -ForegroundColor Green -Force $true
+        Write-Log -Message "Skipped $filesInHashesFoldersCount files that are in PowerDirHasher hash folders" -LogFilePath $LogFilePath -ForegroundColor Green -Force $true
         Write-Log -Message "Skipped $symlinkCount symlinks" -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
         if ($excludedCount -gt 0) {
             Write-Log -Message "Skipped $excludedCount excluded files" -LogFilePath $LogFilePath -ForegroundColor Yellow -Force $true
@@ -2244,6 +2263,7 @@ function Start-FileProcessing {
     $excludedCount = 0
     $reincludedCount = 0
     $symlinkCount = 0
+    $filesInHashesFoldersCount = 0
     $resultMessage = ""
     $results = @()  # Array to store all results in memory
     
@@ -2556,11 +2576,13 @@ function Start-FileProcessing {
                         
                         # Skip files in the _00-hashes directory. Here both $file.FullName and $hasOutputDir should have the same format with no \\?\ prefix.
                         if ($file.FullName.StartsWith($hashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
+                            $filesInHashesFoldersCount++
                             return  # Skip to next file
                         }
                         
                         # Skip files in the _00-file_hashes directory. Here both $file.FullName and $singleFilesHashOutputDir should have the same format with no \\?\ prefix.
                         if ($file.FullName.StartsWith($singleFilesHashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
+                            $filesInHashesFoldersCount++
                             return  # Skip to next file
                         }
 
@@ -2658,6 +2680,7 @@ function Start-FileProcessing {
                     Write-Log -Message "Scan complete!" -LogFilePath $logFilePath -ForegroundColor Green
                     Write-Log -Message "Total files processed: $fileCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                     Write-Log -Message "Files excluded: $excludedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
+                    Write-Log -Message "Skipped $filesInHashesFoldersCount files that are in PowerDirHasher hash folders" -LogFilePath $LogFilePath -ForegroundColor Cyan
                     Write-Log -Message "Symlinks skipped: $symlinkCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                     Write-Log -Message "Files with errors: $errorCount" -LogFilePath $logFilePath -ForegroundColor $(if ($errorCount -gt 0) { "Red" } else { "Green" })
                     Write-Log -Message "Total time: $($duration.ToString('hh\:mm\:ss'))" -LogFilePath $logFilePath -ForegroundColor Cyan
