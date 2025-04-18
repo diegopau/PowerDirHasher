@@ -52,7 +52,7 @@ The program contains just two files:
 
 To start the program:
 
-- Option 1: You directly execute the .bat file. In this case the program will first ask you to indicate the path of a folder or a .hashtask file. that contains a list of folders to process.
+- Option 1: You directly execute the .bat file. In this case the program will first ask you to indicate the path of a folder or a .hashtask file that contains a list of folders to process.
 
 - Option 2: You drag and drop a folder or a text file ending in .hashtask that contains a list of folders to process.
 
@@ -106,7 +106,8 @@ The .hashes file is actually a CSV file that will have the following columns:
 
 Besides this, in the header of the CSV file (invisible to some CSV viewers) there are useful comments indicating if there have been any exclusions applied during the hashing and other information.
 
-This option should ideally only be used the first time a folder is hashed. Notice that the .hashes file generated for folders will include the word "HASH". The synchronization feature of PowerDirHasher will consider .hashes files with "HASH" in the name to be the beginning of the hashing history for that folder. PowerDirHasher always looks for the last .hashes file inside `"_00-hashes"` (based on the timestamp) and ignores anything previous, so if that last file contains "HASH" it will understand that the previous time was the first ever time the folder was hashed.
+This "hash" operation should ideally only be used the first time a folder is hashed. For the next times is better to use the other operations (verify with partial sync, sync or verify with full sync) since those will take the latest .hashes file generated as reference and use the information contained there to give you useful information (verifying the file hashes and/or adding hashes for new files) and generate a new .hashes file containing that new status information.
+If instead later on you do again a "hash" operation, then you are basically resetting the history of changes for that folder, generating a new .hashes file that ignores whatever happened previously. This is ok too if for example you want to save space and keep only one .hashes file, but not usually what you would want.
 
 ### 2 - Verify files with partial sync
 
@@ -381,7 +382,7 @@ However, as a user, you can do quite a bit to prevent this from happening:
 
 # Viewing the .hashes files
 
-This is up to you and there are many options to open CSV files, but in case you are looking for options, in my case I use [NirSoft's CSVFileView](https://www.nirsoft.net/utils/csv_file_view.html) for it's simplicity and because it can ignore the remark lines (the initial lines with comments). It is not open source though, as far as I know, so use at your own risk.
+This is up to you and there are many options to open CSV files, but in case you are looking for options, in my case I use [NirSoft's CSVFileView](https://www.nirsoft.net/utils/csv_file_view.html) for it's simplicity and because it can ignore the remark lines (the initial lines with comments). It is not open source though, as far as I know, so use it at your own risk.
 Also, please remember that there are those initial lines with comments containing important information, and that whenever you need to check that metadata, you should open the CSV file with a text editor.
 
 # Safety measures
