@@ -3420,16 +3420,6 @@ function Start-SingleFileProcessing {
                 }
                 Write-Log -Message "=======================================================" -LogFilePath $logFilePath -ForegroundColor Cyan
                 
-                # Console summary
-                Write-Host ""
-                Write-Host "REPORT SUMMARY" -ForegroundColor Cyan
-                Write-Host "=======================================================" -ForegroundColor Cyan
-                Write-Host "File: $FilePath"
-                Write-Host "Status: $status" -ForegroundColor $(if ($status -eq "NOT MODIFIED") { "Green" } else { "Yellow" })
-                if ($details) {
-                    Write-Host "Details: $details" -ForegroundColor Yellow
-                }
-                Write-Host "=======================================================" -ForegroundColor Cyan
                 
                 if ($SuppressMenu) {
                     return @{
