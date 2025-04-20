@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.5.4"
+$scriptVersion = "0.5.6"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -365,40 +365,40 @@ function Test-AlgorithmsChanged {
 }
 
 # Function to parse task line with exclusions
-function Parse-TaskLine {
+function Parse-ItemLine {
     param (
-        [string]$TaskLine
+        [string]$ItemLine
     )
     
     # Initialize result
-    $taskInfo = @{
+    $itemInfo = @{
         Path = $null
         Exclusions = @()
     }
     
     # Use regular expression to parse the line with quoted items
-    $matchResults = [regex]::Matches($TaskLine, '("[^"]*")')
+    $matchResults = [regex]::Matches($ItemLine, '("[^"]*")')
     
     if ($matchResults.Count -ge 1) {
         # First match is the path
         $pathWithQuotes = $matchResults[0].Value
         $path = $pathWithQuotes.Substring(1, $pathWithQuotes.Length - 2)  # Remove quotes
-        $taskInfo.Path = $path
+        $itemInfo.Path = $path
         
         # Process exclusions (if any)
         for ($i = 1; $i -lt $matchResults.Count; $i++) {
             $exclusionWithQuotes = $matchResults[$i].Value
             
             # Check if it starts with a dash
-            $dashPos = $TaskLine.IndexOf("-" + $exclusionWithQuotes)
+            $dashPos = $ItemLine.IndexOf("-" + $exclusionWithQuotes)
             if ($dashPos -ge 0) {
                 $exclusion = $exclusionWithQuotes.Substring(1, $exclusionWithQuotes.Length - 2)  # Remove quotes
-                $taskInfo.Exclusions += $exclusion
+                $itemInfo.Exclusions += $exclusion
             }
         }
     }
     
-    return $taskInfo
+    return $itemInfo
 }
 
 # Function to validate exclusion patterns
@@ -435,13 +435,13 @@ function Validate-ExclusionPatterns {
             # Check if the extension has an asterisk
             $extension = $exclusion.Substring($exclusion.LastIndexOf('.'))
             if ($extension.Contains('*')) {
-                $invalidExclusions += "Exclusion '$exclusion' has an asterisk in the extension"
+                $invalidExclusions += "Exclusion '$exclusion' has an asterisk in the extension, this is not allowed."
                 continue
             }
             
             # Check if file has an extension
             if ($extension -eq '.') {
-                $invalidExclusions += "Exclusion '$exclusion' is a file without an extension"
+                $invalidExclusions += "Exclusion '$exclusion' is a file without an extension, this is not allowed."
                 continue
             }
         }
@@ -3675,14 +3675,14 @@ function Start-TaskProcessing {
     # Initialize variables for the task summary
     $taskStartTime = (Get-Date).ToUniversalTime()
     $taskSummary = @()
-    $totalTasks = 0
-    $successfulTasks = 0
-    $failedTasks = 0
+    $totalItems = 0
+    $successfulItems = 0
+    $failedItems = 0
     $totalFilesProcessed = 0
     $totalErrorCount = 0
     $totalAccessErrorCount = 0
     $basePath = $null
-    $tasks = @()
+    $items = @()
     
     # Get the task file name for logging purposes
     $taskFileName = [System.IO.Path]::GetFileNameWithoutExtension($TaskFilePath)
@@ -3770,11 +3770,11 @@ function Start-TaskProcessing {
             }
         }
         
-        # Parse each task line to extract path and exclusions
-        foreach ($taskLine in $taskItems) {
-            $taskInfo = Parse-TaskLine -TaskLine $taskLine
-            if ($taskInfo.Path) {
-                $tasks += $taskInfo
+        # Parse each item line to extract path and exclusions
+        foreach ($itemLine in $taskItems) {
+            $itemInfo = Parse-ItemLine -ItemLine $itemLine
+            if ($itemInfo.Path) {
+                $items += $itemInfo
             }
         }
         
@@ -3783,8 +3783,8 @@ function Start-TaskProcessing {
             throw "Invalid .hashtask file: Missing or empty base_path section."
         }
         
-        if ($tasks.Count -eq 0) {
-            throw "Invalid .hashtask file: No tasks specified in the items section."
+        if ($items.Count -eq 0) {
+            throw "Invalid .hashtask file: No items specified in the items section."
         }
         
         $longBasePath = Get-LongPath -Path $basePath
@@ -3796,13 +3796,13 @@ function Start-TaskProcessing {
         
         # Validate exclusion patterns
         $hasInvalidExclusions = $false
-        foreach ($task in $tasks) {
-            # Only validate exclusions for folders, not for individual files
-            if ($task.Path.EndsWith("\") -and $task.Exclusions.Count -gt 0) {
-                $invalidExclusions = Validate-ExclusionPatterns -Exclusions $task.Exclusions
+        foreach ($item in $items) {
+            # Only validate exclusions for items that are folders, not for items that are individual files
+            if ($item.Path.EndsWith("\") -and $item.Exclusions.Count -gt 0) {
+                $invalidExclusions = Validate-ExclusionPatterns -Exclusions $item.Exclusions
                 if ($invalidExclusions.Count -gt 0) {
                     foreach ($error in $invalidExclusions) {
-                        $message = "ERROR in task '$($task.Path)': $error"
+                        $message = "ERROR in task '$($item.Path)': $error"
                         Write-Host $message -ForegroundColor Red
                         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
@@ -3816,42 +3816,42 @@ function Start-TaskProcessing {
             throw "Invalid exclusion patterns found in .hashtask file. Please fix the issues before proceeding."
         }
         
-        # Log the base path and number of tasks found
+        # Log the base path and number of items found
         $message = "Base path: $basePath"
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        $totalTasks = $tasks.Count
-        $message = "Found $totalTasks tasks to process."
+        $totalItems = $items.Count
+        $message = "Found $totalItems items to process."
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        # Process each task
-        foreach ($task in $tasks) {
-            $taskPath = $task.Path
-            $exclusions = $task.Exclusions
+        # Process each item
+        foreach ($item in $items) {
+            $itemPath = $item.Path
+            $exclusions = $item.Exclusions
             
             # Determine if task is a folder (ends with \)
-            $isFolder = $taskPath.EndsWith("\")
+            $isFolder = $itemPath.EndsWith("\")
             
             if (-not $isFolder) {
                 # This is not a folder, so it must be a file with an extension
-                if (-not $taskPath.Contains(".")) {
-                    $message = "ERROR: '$taskPath' is not a folder or a supported file. All folders must end in '\'. Files without extension are not supported."
+                if (-not $itemPath.Contains(".")) {
+                    $message = "ERROR: '$itemPath' is not a folder or a supported file. All folders must end in '\'. Files without extension are not supported."
                     Write-Host $message -ForegroundColor Red
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                     "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
-                    $failedTasks++
+                    $failedItems++
                     continue
                 }
                 
                 # Construct the full path for the file
                 if ($basePath.EndsWith("\")) {
-                    $fullPath = $basePath + $taskPath
+                    $fullPath = $basePath + $itemPath
                 } else {
-                    $fullPath = $basePath + "\" + $taskPath
+                    $fullPath = $basePath + "\" + $itemPath
                 }
                 
                 # Log file processing
@@ -3860,7 +3860,7 @@ function Start-TaskProcessing {
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                 "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
                 
-                $message = "Processing file: $taskPath"
+                $message = "Processing file: $itemPath"
                 Write-Host $message -ForegroundColor Cyan
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                 "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
@@ -3872,7 +3872,7 @@ function Start-TaskProcessing {
                 
                 # Initialize file result
                 $fileResult = [PSCustomObject]@{
-                    Task = $taskPath
+                    Item = $itemPath
                     FullPath = $fullPath
                     Status = "Not Processed"
                     FilesProcessed = 0
@@ -3888,7 +3888,7 @@ function Start-TaskProcessing {
                 if (-not (Test-Path -LiteralPath $fullLongPath -PathType Leaf)) {
                     $fileResult.Status = "Failed"
                     $fileResult.Message = "File does not exist"
-                    $failedTasks++
+                    $failedItems++
                     
                     $message = "ERROR: File does not exist: $fullPath"
                     Write-Host $message -ForegroundColor Red
@@ -3936,13 +3936,13 @@ function Start-TaskProcessing {
                     
                     # Update summary counters
                     if ($result.Success) {
-                        $successfulTasks++
+                        $successfulItems++
                         $totalFilesProcessed += $result.FilesProcessed
                         $totalErrorCount += $result.ErrorCount
                         $totalAccessErrorCount += $result.AccessErrorCount
                     }
                     else {
-                        $failedTasks++
+                        $failedItems++
                     }
                     
                     $message = "Completed processing file: $fullPath"
@@ -3958,7 +3958,7 @@ function Start-TaskProcessing {
                     $fileResult.Status = "Failed"
                     $fileResult.Duration = $fileDuration
                     $fileResult.Message = "Error: $_"
-                    $failedTasks++
+                    $failedItems++
                     
                     $message = "ERROR: Failed to process file: $fullPath. Error: $_"
                     Write-Host $message -ForegroundColor Red
@@ -3973,9 +3973,9 @@ function Start-TaskProcessing {
             
             # Construct the full path
             if ($basePath.EndsWith("\")) {
-                $fullPath = $basePath + $taskPath.TrimStart("\")
+                $fullPath = $basePath + $itemPath.TrimStart("\")
             } else {
-                $fullPath = $basePath + "\" + $taskPath.TrimStart("\")
+                $fullPath = $basePath + "\" + $itemPath.TrimStart("\")
             }
             
             # Log task processing
@@ -3984,7 +3984,7 @@ function Start-TaskProcessing {
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
-            $message = "Processing: $taskPath"
+            $message = "Processing: $itemPath"
             Write-Host $message -ForegroundColor Cyan
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
@@ -4003,7 +4003,7 @@ function Start-TaskProcessing {
             
             # Initialize directory result
             $directoryResult = [PSCustomObject]@{
-                Task = $taskPath
+                Item = $itemPath
                 FullPath = $fullPath
                 Status = "Not Processed"
                 FilesProcessed = 0
@@ -4018,7 +4018,7 @@ function Start-TaskProcessing {
             if (-not (Test-Path -LiteralPath $longDirectoryPath -PathType Container)) {
                 $directoryResult.Status = "Failed"
                 $directoryResult.Message = "Directory does not exist"
-                $failedTasks++
+                $failedItems++
                 
                 $message = "ERROR: Directory does not exist: $fullPath"
                 Write-Host $message -ForegroundColor Red
@@ -4066,13 +4066,13 @@ function Start-TaskProcessing {
                 
                 # Update summary counters
                 if ($result.Success) {
-                    $successfulTasks++
+                    $successfulItems++
                     $totalFilesProcessed += $result.FilesProcessed
                     $totalErrorCount += $result.ErrorCount
                     $totalAccessErrorCount += $result.AccessErrorCount
                 }
                 else {
-                    $failedTasks++
+                    $failedItems++
                 }
                 
                 $message = "Completed processing directory: $fullPath"
@@ -4088,7 +4088,7 @@ function Start-TaskProcessing {
                 $directoryResult.Status = "Failed"
                 $directoryResult.Duration = $dirDuration
                 $directoryResult.Message = "Error: $_"
-                $failedTasks++
+                $failedItems++
                 
                 $message = "ERROR: Failed to process directory: $fullPath. Error: $_"
                 Write-Host $message -ForegroundColor Red
@@ -4131,18 +4131,18 @@ function Start-TaskProcessing {
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        $message = "Total Items: $totalTasks"
+        $message = "Total Items: $totalItems"
         Write-Host $message -ForegroundColor White
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        $message = "Successful Items: $successfulTasks"
-        Write-Host $message -ForegroundColor $(if ($successfulTasks -eq $totalTasks) { "Green" } else { "White" })
+        $message = "Successful Items: $successfulItems"
+        Write-Host $message -ForegroundColor $(if ($successfulItems -eq $totalItems) { "Green" } else { "White" })
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        $message = "Failed Items: $failedTasks"
-        Write-Host $message -ForegroundColor $(if ($failedTasks -gt 0) { "Red" } else { "White" })
+        $message = "Failed Items: $failedItems"
+        Write-Host $message -ForegroundColor $(if ($failedItems -gt 0) { "Red" } else { "White" })
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
@@ -4182,46 +4182,46 @@ function Start-TaskProcessing {
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        # Write detailed summary for each task
-        foreach ($taskResult in $taskSummary) {
-            $statusColor = switch ($taskResult.Status) {
+        # Write detailed summary for each item
+        foreach ($itemResult in $taskSummary) {
+            $statusColor = switch ($itemResult.Status) {
                 "Success" { "Green" }
                 "Failed" { "Red" }
                 default { "Yellow" }
             }
             
-            $message = "Item: $($taskResult.Task)"
+            $message = "Item: $($itemResult.Item)"
             Write-Host $message -ForegroundColor White
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
-            $message = "Status: $($taskResult.Status)"
+            $message = "Status: $($itemResult.Status)"
             Write-Host $message -ForegroundColor $statusColor
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
-            $message = "Files Processed: $($taskResult.FilesProcessed)"
+            $message = "Files Processed: $($itemResult.FilesProcessed)"
             Write-Host $message -ForegroundColor White
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
-            $message = "Total Errors (including file access errors): $($taskResult.ErrorCount)"
-            Write-Host $message -ForegroundColor $(if ($taskResult.ErrorCount -gt 0) { "Red" } else { "Green" })
+            $message = "Total Errors (including file access errors): $($itemResult.ErrorCount)"
+            Write-Host $message -ForegroundColor $(if ($itemResult.ErrorCount -gt 0) { "Red" } else { "Green" })
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
 
-            $message = "File Access Errors: $($taskResult.AccessErrorCount)"
-            Write-Host $message -ForegroundColor $(if ($taskResult.AccessErrorCount -gt 0) { "Red" } else { "Green" })
+            $message = "File Access Errors: $($itemResult.AccessErrorCount)"
+            Write-Host $message -ForegroundColor $(if ($itemResult.AccessErrorCount -gt 0) { "Red" } else { "Green" })
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
-            $message = "Duration: $($taskResult.Duration.ToString('hh\:mm\:ss'))"
+            $message = "Duration: $($itemResult.Duration.ToString('hh\:mm\:ss'))"
             Write-Host $message -ForegroundColor White
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
-            if (-not [string]::IsNullOrEmpty($taskResult.Message)) {
-                $message = "Message: $($taskResult.Message)"
+            if (-not [string]::IsNullOrEmpty($itemResult.Message)) {
+                $message = "Message: $($itemResult.Message)"
                 Write-Host $message -ForegroundColor White
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                 "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
