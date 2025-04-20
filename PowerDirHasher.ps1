@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.5.7"
+$scriptVersion = "0.5.8"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -1895,7 +1895,7 @@ function Find-NewFiles {
             if ($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                 $symlinkCount++
                 if ($symlinkCount % 100 -eq 1) {
-                    Write-Log -Message "Skipped symlink: $($file.FullName)" -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
+                    Write-Log -Message "Skipped symlink: $normalizedFilePath" -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
                 }
                 continue
             }
@@ -1908,7 +1908,7 @@ function Find-NewFiles {
 			    if ($script:logSettings.ShowInLog["excluded"] -eq "all" -or
 			        $script:logSettings.ShowInTerminal["excluded"] -eq "all") {
 			        # Always log if "all" is specified in either setting
-			        Write-Log -Message "Skipped excluded file: $($file.FullName)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "EXCLUDED" -IsPreviouslyAdded $false
+			        Write-Log -Message "Skipped excluded file: $normalizedFilePath" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "EXCLUDED" -IsPreviouslyAdded $false
 			    } 
 			    elseif ($excludedCount -eq 1) {
 			        # Log the first occurrence regardless to indicate exclusions are happening
