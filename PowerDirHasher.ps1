@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.5.6"
+$scriptVersion = "0.5.7"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -1829,7 +1829,8 @@ function Find-NewFiles {
         
         # If exclusions exist, log them
         if ($Exclusions.Count -gt 0) {
-            Write-Log -Message "Using exclusion patterns: $($Exclusions -join ', ')" -LogFilePath $LogFilePath -ForegroundColor Yellow -Force $true
+            $quotedExclusions = $exclusions | ForEach-Object { "`"$_`"" }
+            Write-Log -Message "Using exclusion patterns: $($quotedExclusions -join ', ')" -LogFilePath $LogFilePath -ForegroundColor Yellow -Force $true
         }
         
         # Use Get-ChildItem to get all files
@@ -2061,7 +2062,8 @@ function Process-ReportMode {
     Write-Log -Message "Using hash file: $($normalizedLatestHashFilePath)" -LogFilePath $LogFilePath -ForegroundColor Cyan
     
     if ($Exclusions.Count -gt 0) {
-        Write-Log -Message "Using exclusion patterns: $($Exclusions -join ', ')" -LogFilePath $LogFilePath -ForegroundColor Yellow
+        $quotedExclusions = $exclusions | ForEach-Object { "`"$_`"" }
+        Write-Log -Message "Using exclusion patterns: $($quotedExclusions -join ', ')" -LogFilePath $LogFilePath -ForegroundColor Yellow
     }
     
     # Initialize counters
@@ -2257,6 +2259,7 @@ function Start-FileProcessing {
     $errorCount = 0
     $addedCount = 0
     $modifiedCount = 0
+    $touchedCount = 0
     $deletedCount = 0
     $identicalCount = 0
     $corruptedCount = 0
@@ -2323,8 +2326,9 @@ function Start-FileProcessing {
         
         # Log exclusions if any
         if ($Exclusions.Count -gt 0) {
-            "# Exclusions: $($Exclusions -join ', ')" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            Write-Log -Message "Using exclusion patterns: $($Exclusions -join ', ')" -LogFilePath $logFilePath -ForegroundColor Yellow
+            $quotedExclusions = $exclusions | ForEach-Object { "`"$_`"" }
+            "# Exclusions: $($quotedExclusions -join ', ')" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            Write-Log -Message "Using exclusion patterns: $($quotedExclusions -join ', ')" -LogFilePath $logFilePath -ForegroundColor Yellow
         }
         
         "# Note: Symlinks are automatically skipped (not hashed)" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
@@ -2397,7 +2401,7 @@ function Start-FileProcessing {
             if ($null -eq $latestHashesFile) {
                 # If no existing hashes file is found and mode is not Hash, we should handle this
                 if ($Mode -eq "Report") {
-                    Write-Log -Message "No existing hashes file found. Cannot generate report." -LogFilePath $logFilePath -ForegroundColor Yellow
+                    Write-Log -Message "No existing hashes file found. Cannot generate report." -LogFilePath $logFilePath -ForegroundColor Red
                     $resultMessage = "No existing hashes file found for reporting"
                     
                     if ($SuppressMenu) {
@@ -2420,7 +2424,7 @@ function Start-FileProcessing {
             }
             else {
                 $normalizedFilePath = Get-NormalizedPath -Path $latestHashesFile.FullName
-                Write-Log -Message "Found latest hashes file: $($normalizedFilePath)" -LogFilePath $logFilePath -ForegroundColor Green
+                Write-Log -Message "Found latest hashes file: $normalizedFilePath" -LogFilePath $logFilePath -ForegroundColor Green
                 
                 # Check if algorithms have changed - ONLY FOR NON-REPORT MODES
                 if ($Mode -ne "Report") {
@@ -2553,6 +2557,8 @@ function Start-FileProcessing {
                     Get-ChildItem -LiteralPath $longDirectoryPath -File -Recurse -Force -ErrorAction Continue -ErrorVariable getErrors | ForEach-Object {
                         $file = $_
                         
+                        $normalizedFullName = Get-NormalizedPath -Path $file.FullName
+
                         # Track subfolder changes
                         if ($script:logSettings.ShowSubfolderCurrentlyBeingProcessed) {
                             $folderPath = Split-Path -Parent $file.FullName
@@ -2569,7 +2575,7 @@ function Start-FileProcessing {
                             $symlinkCount++
                             # Log only every 100 symlinks to avoid excessive logging
                             if ($symlinkCount % 100 -eq 1) {
-                                Write-Log -Message "Skipped 100 symlinks and now skipping symlink: $($file.FullName)" -LogFilePath $logFilePath -ForegroundColor Cyan -Force $true
+                                Write-Log -Message "Skipped 100 symlinks and now skipping symlink: $normalizedFullName" -LogFilePath $logFilePath -ForegroundColor Cyan -Force $true
                             }
                             return  # Skip to next file
                         }
@@ -2590,28 +2596,19 @@ function Start-FileProcessing {
                         # Skip excluded files
                         if ($Exclusions.Count -gt 0 -and (Test-ExclusionMatch -Path $file.FullName -Exclusions $Exclusions)) {
                             $excludedCount++
-                            if ($excludedCount -le 5) {  # Only log the first few exclusions to avoid flooding the log
-                                Write-Log -Message "Skipped excluded file: $($file.FullName)" -LogFilePath $logFilePath -ForegroundColor Yellow -Status "EXCLUDED" -IsPreviouslyAdded $false
+                            if ($excludedCount -le 5) {  # Only log the first few exclusions to avoid flooding the log, unless the .ini asks to log all
+                                Write-Log -Message "Skipped excluded file: $normalizedFullName" -LogFilePath $logFilePath -ForegroundColor Yellow
                             } elseif ($excludedCount -eq 6) {
-                                Write-Log -Message "Additional excluded files will not be logged individually" -LogFilePath $logFilePath -ForegroundColor Yellow -Force $true
+                                if (-not ($script:logSettings.ShowInLog["excluded"] -eq "All")){
+                                    Write-Log -Message "Additional excluded files will not be logged individually" -LogFilePath $logFilePath -ForegroundColor Yellow -Force $true
+                                }
+                            } else{
+                                if ($script:logSettings.ShowInLog["excluded"] -eq "All"){
+                                    Write-Log -Message "Skipped excluded file: $normalizedFullName" -LogFilePath $logFilePath -ForegroundColor Yellow -Status "EXCLUDED" -IsPreviouslyAdded $false
+                                }
                             }
+
                                             
-                            # Remove this section - don't add excluded files to results in Hash mode
-                            # $relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $normalizedDirectoryPath
-                            # $excludedResult = [PSCustomObject]@{
-                            #     FilePath = $relativePath
-                            #     HashStatus = "EXCLUDED"
-                            #     FileSize = $file.Length
-                            #     ModificationDateUTC = $file.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
-                            #     Comments = "File matches exclusion pattern"
-                            # }
-                            # 
-                            # # Add empty hash properties
-                            # foreach ($algo in $algorithms) {
-                            #     $excludedResult | Add-Member -MemberType NoteProperty -Name $algo -Value ""
-                            # }
-                            # 
-                            # $null = $results.Add($excludedResult)
                             return  # Skip to next file
                         }
                         
@@ -2642,7 +2639,7 @@ function Start-FileProcessing {
                                 $null = $results.Add($newResult)
                                 
                                 # Log error with full path
-                                Write-Log -Message "ERROR: Hash calculation failed for file: $($file.FullName)" -LogFilePath $logFilePath -ForegroundColor Red
+                                Write-Log -Message "ERROR: Hash calculation failed for file: $normalizedFullName" -LogFilePath $logFilePath -ForegroundColor Red
                             }
                         }
                         catch {
@@ -2776,6 +2773,7 @@ function Start-FileProcessing {
                             "MODIFIED_DATE_SIZE" { $modifiedCount++ }
                             "MODIFIED_ONLY_DATE" { $modifiedCount++ }
                             "ALERT_MODIFIED_ONLY_SIZE" { $modifiedCount++ }
+                            "TOUCHED" { $touchedCount++ }
                             "ALERT_CORRUPTED" { $corruptedCount++ }
                             "VERIFY_ERROR_SKIPPED" { $errorCount++ }
                             "SYNC_ERROR_SKIPPED" { $errorCount++ }
@@ -2843,6 +2841,7 @@ function Start-FileProcessing {
                 Write-Log -Message "Files identical: $identicalCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files added: $addedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files modified: $modifiedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
+                Write-Log -Message "Files touched: $touchedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files deleted: $deletedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files excluded: $excludedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files reincluded: $reincludedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
@@ -3014,6 +3013,7 @@ function Start-SingleFileProcessing {
     $errorCount = 0
     $addedCount = 0
     $modifiedCount = 0
+    $touchedCount = 0
     $deletedCount = 0
     $identicalCount = 0
     $corruptedCount = 0
@@ -3029,6 +3029,7 @@ function Start-SingleFileProcessing {
         $fileInfo = Get-Item -LiteralPath $longFilePath
         $fileName = $fileInfo.Name
         $parentDirectory = $fileInfo.Directory.FullName
+        $normalizedParentDirectory = Get-NormalizedPath -Path $parentDirectory
         
         # Create timestamp
         $timestamp = Get-FormattedTimestamp
@@ -3069,7 +3070,7 @@ function Start-SingleFileProcessing {
         
         # Initialize log file
         if ($script:operationPathType -eq "HashTask") {
-            "# Processing folder" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# Processing single file" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
         }
         else{
             "# File Processing Utility Log" | Out-File -FilePath $logFilePath -Encoding UTF8
@@ -3099,7 +3100,7 @@ function Start-SingleFileProcessing {
         
         # Create hash output directory if it doesn't exist
         $hashFolderName = $script:fileHashFolderName
-        $hashOutputDir = Join-Path -Path $parentDirectory -ChildPath $hashFolderName
+        $hashOutputDir = Join-Path -Path $normalizedParentDirectory -ChildPath $hashFolderName
         $longHashOutputDir = Get-LongPath -Path $hashOutputDir
         
         Write-Log -Message "Hash output directory will be: $hashOutputDir" -LogFilePath $logFilePath -ForegroundColor Cyan
@@ -3171,7 +3172,8 @@ function Start-SingleFileProcessing {
                 }
             }
             else {
-                Write-Log -Message "Found latest hashes file: $($latestHashesFile.FullName)" -LogFilePath $logFilePath -ForegroundColor Green
+                $latestHashesFileNormalizedPath = Get-NormalizedPath -Path $latestHashesFile.FullName
+                Write-Log -Message "Found latest hashes file: $latestHashesFileNormalizedPath" -LogFilePath $logFilePath -ForegroundColor Green
                 
                 # Check if algorithms have changed - ONLY FOR NON-REPORT MODES
                 if ($Mode -ne "Report") {
@@ -3455,7 +3457,7 @@ function Start-SingleFileProcessing {
                 
                 if ($fileHash) {
                     # Process the file hash
-                    $result = Process-ExistingFileHash -FileHash $fileHash -Mode $Mode -DirectoryPath $parentDirectory -Algorithms $algorithms -LogFilePath $logFilePath
+                    $result = Process-ExistingFileHash -FileHash $fileHash -Mode $Mode -DirectoryPath $normalizedParentDirectory -Algorithms $algorithms -LogFilePath $logFilePath
                     
                     # Make sure error messages are reflected in Comments field
                     if ($result.IsError -and ($null -ne $result.HashResult) -and ![string]::IsNullOrEmpty($result.ErrorMessage)) {
@@ -3472,6 +3474,7 @@ function Start-SingleFileProcessing {
                         "MODIFIED_DATE_SIZE" { $modifiedCount++ }
                         "MODIFIED_ONLY_DATE" { $modifiedCount++ }
                         "ALERT_MODIFIED_ONLY_SIZE" { $modifiedCount++ }
+                        "TOUCHED" {$touchedCount++}
                         "ALERT_CORRUPTED" { $corruptedCount++ }
                         "VERIFY_ERROR_SKIPPED" { $errorCount++ }
                         "SYNC_ERROR_SKIPPED" { $errorCount++ }
@@ -3521,6 +3524,7 @@ function Start-SingleFileProcessing {
                 Write-Log -Message "Files identical: $identicalCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files added: $addedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files modified: $modifiedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
+                Write-Log -Message "Files touched: $touchedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files deleted: $deletedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files corrupted: $corruptedCount" -LogFilePath $logFilePath -ForegroundColor $(if ($corruptedCount -gt 0) { "Red" } else { "Green" })
                 Write-Log -Message "Files with errors: $errorCount" -LogFilePath $logFilePath -ForegroundColor $(if ($errorCount -gt 0) { "Red" } else { "Green" })
@@ -3830,6 +3834,8 @@ function Start-TaskProcessing {
         
         # Process each item
         foreach ($item in $items) {
+            # We reset the scriptFailed varilable to false each time a new item is processed (because it tracks the success of a single folder operation not the whole task)
+            $global:scriptFailed = $false
             $itemPath = $item.Path
             $exclusions = $item.Exclusions
             
@@ -3995,7 +4001,8 @@ function Start-TaskProcessing {
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
             
             if ($exclusions.Count -gt 0) {
-                $message = "With exclusions: $($exclusions -join ', ')"
+                $quotedExclusions = $exclusions | ForEach-Object { "`"$_`"" }
+                $message = "With exclusions: $($quotedExclusions -join ', ')"
                 Write-Host $message -ForegroundColor Yellow
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                 "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
@@ -4210,10 +4217,12 @@ function Start-TaskProcessing {
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
             "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
 
-            $message = "File Access Errors: $($itemResult.AccessErrorCount)"
-            Write-Host $message -ForegroundColor $(if ($itemResult.AccessErrorCount -gt 0) { "Red" } else { "Green" })
-            $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            if ($itemResult.AccessErrorCount){
+                $message = "File Access Errors: $($itemResult.AccessErrorCount)"
+                Write-Host $message -ForegroundColor $(if ($itemResult.AccessErrorCount -gt 0) { "Red" } else { "Green" })
+                $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
+                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            }
             
             $message = "Duration: $($itemResult.Duration.ToString('hh\:mm\:ss'))"
             Write-Host $message -ForegroundColor White
