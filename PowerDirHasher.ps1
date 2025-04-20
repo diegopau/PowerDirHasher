@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.5.8"
+$scriptVersion = "0.5.9"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -4163,13 +4163,13 @@ function Start-TaskProcessing {
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        # Write task details
+        # Write items details
         $message = "======================================================================="
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
         
-        $message = "TASKS DETAILS"
+        $message = "ITEM DETAILS"
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
