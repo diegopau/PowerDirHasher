@@ -1,6 +1,6 @@
 # PowerDirHasher
 
-PowerDirHasher is a PowerShell script designed to do data integrity operations, using hash algorithms, for a folder or list of folders.
+PowerDirHasher is a PowerShell script designed to do data integrity operations, using hash algorithms, for a folder or list of folders. It works under Windows 10/11.
 It is designed to be super easy to use while still covering the most common features needed for file hashing and validation.
 It does not only file hashing but also verification, file corruption detection (distinguishing between modified files and corrupted files) and keeps a full history of file changes for the target folder/s.
 
@@ -185,7 +185,7 @@ IT WILL NOT TELL YOU IF ANY FILES HAVE BEEN CORRUPTED, because it does not read 
 
 - It will generated a log file with name `{timestamp}_DIR-REPORT_{folder_name}.hashlog` (for single forlders) or `{timestamp}_TASK-REPORT_{folder_name}.hashlog` (for .hashtask files)
 
-- It will not generated any .hashes file.
+- It will not generate any .hashes file.
 
 ## Single File operations
 A .hashtask file can also indicate individual files (one per line) instead of individual folders.
@@ -321,7 +321,7 @@ COMBINATIONS when at least one algorithm show the same hash for the file:
 
 - Same modification date, different size, same hash for some or all algos: flagged as ALERT_COLLISION. Two essentially different files are giving the same hash, this can only indicate an error with the way PowerDirHasher hashes files or a real collision (two files giving the same hash). Collisions are supposed to be very very low probability even for MD5 algo. SINCE THE MODICATION DATE IS THE SAME BUT THE SIZE IS DIFFERENT THIS COULD INDICATE A BAD ACTOR TRYING TO MANUFACTURE A FILE WITH THE SAME HASH and changing the date back to the original to make it less obvious.
 
-- Same modification date, same size, same hash for only for some algos: flagged as ALERT_HASH_INCONSISTENCY. If some algorithms are giving a different hash, unless there is a failure in the algoritm implementations, it would imply that the file is actually not the same but it manages to show the same hash for at least one algo. This could only be achieved if a bad actor manages to modify the file while keeping the file size and modification date intact in a way that for a specific algo (or sets of algos) it creates a collision with the original file, but the other algos still create a different hash. Flagged different than the other thre collision cases because this one keeps the both the modification date and size intact so it wouldn't be checked by a "Sync" operation.
+- Same modification date, same size, same hash for only for some algos: flagged as ALERT_HASH_INCONSISTENCY. If some algorithms are giving a different hash, unless there is a failure in the algorithm implementations, it would imply that the file is actually not the same but it manages to show the same hash for at least one algo. This could only be achieved if a bad actor manages to modify the file while keeping the file size and modification date intact in a way that for a specific algo (or sets of algos) it creates a collision with the original file, but the other algos still create a different hash. Flagged different than the other three collision cases because this one keeps the both the modification date and size intact so it wouldn't be checked by a "Sync" operation.
 
 - Same modification date, same size, same hash for all algos: flagged as IDENTICAL.
 
