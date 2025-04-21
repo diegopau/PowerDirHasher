@@ -1201,6 +1201,14 @@ function Determine-FileStatus {
         [string[]]$Algorithms
     )
     
+    # Check if Algorithms array is empty
+    if ($Algorithms.Count -eq 0) {
+        return @{
+            Status = "PROCESS_ERROR"
+            Comment = "No hash algorithms specified for comparison"
+        }
+    }
+
     # Compare hashes
     $hashChanged = $false
     $identicalHashes = @()
@@ -1270,7 +1278,7 @@ function Determine-FileStatus {
         }
     }
     # All hashes are the same (complete match)
-    else {
+    elseif (-not $hashChanged -and $Algorithms.Count -eq $identicalHashes.Count) {
         if ($DateChanged -and $SizeChanged) {
             return @{
                 Status = "ALERT_COLLISION"
@@ -1294,6 +1302,13 @@ function Determine-FileStatus {
                 Status = "IDENTICAL"
                 Comment = ""
             }
+        }
+    }
+    # This should never happen if the logic above is correct, but added as a safeguard
+    else {
+        return @{
+            Status = "PROCESS_ERROR"
+            Comment = "Logic error in hash comparison"
         }
     }
 }
@@ -2543,9 +2558,10 @@ function Start-FileProcessing {
                 }
                 
                 # Write initial status
+                $progressDisplayedEach = $script:logSettings.ShowProcessedFileCountEach
                 Write-Log -Message "Starting file hash generation..." -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Scanning: $directoryPath" -LogFilePath $logFilePath -ForegroundColor Cyan
-                Write-Log -Message "Progress will be displayed every 100 files" -LogFilePath $logFilePath -ForegroundColor Cyan
+                Write-Log -Message "Progress will be displayed every $progressDisplayedEach files" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "----------------------------------------------" -LogFilePath $logFilePath -ForegroundColor Cyan
                 
                 # Process each file one at a time using simple direct ForEach-Object approach
