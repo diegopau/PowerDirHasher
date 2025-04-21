@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.5.9"
+$scriptVersion = "0.6.0"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -1160,11 +1160,21 @@ function Process-StandardFile {
             else { "White" }
         ) -Status $result.Status -IsPreviouslyAdded $true  # Force this to true since we're looking at existing files
         
-        return @{
-            HashResult = $newHashResult
-            Status = $result.Status
-            IsError = $false
-            ErrorMessage = ""
+        if ($result.Status -eq "PROCESS_ERROR") { 
+            return @{
+                HashResult = $newHashResult
+                Status = $result.Status
+                IsError = $true
+                ErrorMessage = $result.Comment
+            }
+        }
+        else{
+            return @{
+                HashResult = $newHashResult
+                Status = $result.Status
+                IsError = $false
+                ErrorMessage = ""
+            }
         }
     }
     catch {
@@ -1278,7 +1288,7 @@ function Determine-FileStatus {
         }
     }
     # All hashes are the same (complete match)
-    elseif (-not $hashChanged -and $Algorithms.Count -eq $identicalHashes.Count) {
+    elseif (-not $hashChanged -and ($Algorithms.Count -eq $identicalHashes.Count)) {
         if ($DateChanged -and $SizeChanged) {
             return @{
                 Status = "ALERT_COLLISION"
