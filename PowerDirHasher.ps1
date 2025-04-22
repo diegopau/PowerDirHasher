@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.0"
+$scriptVersion = "0.6.1"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -184,6 +184,12 @@ function Initialize-Settings {
         # Process logging settings
         $logsSection = $script:settings["logs and terminal output"]
         if ($logsSection) {
+            # Process process indicators
+            if ($logsSection["always_show__hashing_progress_for_files_bigger_than_mb"]){
+                $script:logSettings.MinimumFileSizeForProgressReport = [int]$logsSection["always_show__hashing_progress_for_files_bigger_than_mb"]
+            } else {
+                Write-Host "Error: show_subfolder_currently_being_processed setting not found in settings.ini. Applying defaults." -ForegroundColor Red
+            }
             # Process process indicators
             if ($logsSection["show_subfolder_currently_being_processed"]){
                 $script:logSettings.ShowSubfolderCurrentlyBeingProcessed = Get-BooleanValue $logsSection["show_subfolder_currently_being_processed"]
@@ -422,13 +428,24 @@ function Validate-ExclusionPatterns {
         $isFolder = $exclusion.EndsWith('\')
         
         if ($isFolder) {
-            # Folder-specific validation if needed
-            # Currently, no additional validation required for folders
+            # For folder exclusions, check if the path (without the trailing backslash) contains any backslashes
+            $folderPath = $exclusion.Substring(0, $exclusion.Length - 1)
+            if ($folderPath.Contains('\')) {
+                $invalidExclusions += "Exclusion '$exclusion' contains multiple folder levels, which is not allowed"
+                continue
+            }
         }
         else {
+
             # If not a folder, it must be a file with an extension
             if (-not $exclusion.Contains('.')) {
                 $invalidExclusions += "Exclusion '$exclusion' is not a valid file (missing extension) or folder (must end with \)"
+                continue
+            }
+
+            # For file exclusions, check if the path contains any backslashes
+            if ($exclusion.Contains('\')) {
+                $invalidExclusions += "Exclusion '$exclusion' contains folder paths, which is not allowed for single files"
                 continue
             }
             
@@ -583,9 +600,21 @@ function Get-MultipleFileHashes {
 
         # Open the file once and read it in chunks
         $stream = [System.IO.File]::OpenRead($longPath)
+
+        # Determine if we need to show progress based on file size
+        $progressThresholdMB = $script:logSettings.MinimumFileSizeForProgressReport
+        $fileSizeMB = [math]::Ceiling($stream.Length / 1MB)
+        $showProgress = ($progressThresholdMB -gt 0) -and ($fileSizeMB -ge $progressThresholdMB)
+
+        if ($showProgress) {
+            $fileName = [System.IO.Path]::GetFileName($FilePath)
+        }
+
         # 4KB buffer for reading matching NTFS default cluster size and Windows default memory page size
         $buffer = New-Object byte[] 4096
         $bytesRead = 0
+        $totalBytesRead = 0
+        $lastReportedMB = 0
 
         # Process the file in chunks to handle files of any size
         do {
@@ -595,8 +624,26 @@ function Get-MultipleFileHashes {
                 foreach ($algo in $Algorithms) {
                     $hashers[$algo].TransformBlock($buffer, 0, $bytesRead, $null, 0) | Out-Null
                 }
+
+                # Update progress if needed
+                if ($showProgress) {
+                    $totalBytesRead += $bytesRead
+                    $currentMB = [math]::Floor($totalBytesRead / 1MB)
+                    
+                    if ($currentMB -gt $lastReportedMB) {
+                        # Use carriage return to overwrite the same line
+                        Write-Host "`rProgress for file $fileName`: ${currentMB}MB/${fileSizeMB}MB" -NoNewline
+                        $lastReportedMB = $currentMB
+                    }
+                }
             }
         } while ($bytesRead -ne 0)
+
+
+        # Add a newline at the end of progress if we showed progress
+        if ($showProgress) {
+            Write-Host "" # Add a newline after completing the progress
+        }
 
         # Finalize all hash calculations
         foreach ($algo in $Algorithms) {
@@ -2027,8 +2074,8 @@ function Find-NewFiles {
                 }
                 
                 # Log periodically
-                if ($newFileCount % 100 -eq 0) {
-                    Write-Log -Message "Found $newFileCount new files so far" -LogFilePath $LogFilePath -ForegroundColor Green -Status "ADDED" -IsPreviouslyAdded $false
+                if ($newFileCount % $script:logSettings.ShowProcessedFileCountEach -eq 0) {
+                    Write-Log -Message "Found and attempted to hash $newFileCount new files so far" -LogFilePath $LogFilePath -ForegroundColor Green -Status "ADDED" -IsPreviouslyAdded $false
                 }
 
             }
@@ -2656,6 +2703,7 @@ function Start-FileProcessing {
                                 $newResult = New-HashResult -FilePath $file.FullName -FileInfo $file -Hashes $hashes -BaseDirectory $normalizedDirectoryPath -Algorithms $algorithms
                                 $null = $results.Add($newResult)
                                 $addedCount++
+                                Write-Log -Message "Added file $normalizedFullName" -LogFilePath $logFilePath -ForegroundColor White -Status "ADDED" -IsPreviouslyAdded $false
                             }
                             else {
                                 # Handle hash calculation failure
@@ -2776,8 +2824,8 @@ function Start-FileProcessing {
                 foreach ($fileHash in $existingHashes) {
                     $processedFiles++
                     
-                    # Show progress every 100 files
-                    if ($processedFiles % 100 -eq 0) {
+                    # Show progress every X files (as set in the .ini)
+                    if ($processedFiles % $script:logSettings.ShowProcessedFileCountEach -eq 0) {
                         Write-Log -Message "Processed $processedFiles of $totalFilesInHash files" -LogFilePath $logFilePath -ForegroundColor Yellow
                     }
                     
@@ -3859,6 +3907,15 @@ function Start-TaskProcessing {
             $isFolder = $itemPath.EndsWith("\")
             
             if (-not $isFolder) {
+                # This is not a folder, check if it contains directory separators
+                if ($itemPath.Contains('\')) {
+                    $message = "ERROR: '$itemPath' contains multiple folder levels. Individual file specifications cannot include subdirectories."
+                    Write-Host $message -ForegroundColor Red
+                    $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
+                    "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                    $failedItems++
+                    continue
+                }
                 # This is not a folder, so it must be a file with an extension
                 if (-not $itemPath.Contains(".")) {
                     $message = "ERROR: '$itemPath' is not a folder or a supported file. All folders must end in '\'. Files without extension are not supported."

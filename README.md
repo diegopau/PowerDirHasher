@@ -68,7 +68,7 @@ base_path:
 
 items:
 "2018\" -"*.thumb" -"*backup.png"
-"childhool\family\" -"*copias/"
+"childhood\family\" -"*copias/"
 "trips and holidays\" -"old-*.jpg" -"old-*.png"
 "More pictures\" -"backup/" "discarded*/"
 "old-photos.7z"
@@ -218,7 +218,7 @@ It follows a series of rules:
 ```
 - Only one base path is allowed
 - All folders must end in "\"
-- All individual files must end in an extension
+- All individual files must end in an extension and be directly under the base path
 - Files without extension are not allowed
 ```
 
@@ -233,7 +233,7 @@ base_path:
 
 items:
 "2018\" -"*.thumb" -"*backup.png"
-"childhool\family\" -"*copias\"
+"childhood\family\" -"*copias\"
 "trips and holidays\" -"old-*.jpg" -"old-*.png"
 "More pictures\" -"backup\" -"discarded*\"
 "old-photos.7z"
@@ -250,18 +250,21 @@ items:
 "2018\" -"*.thumb" -"*backup.png"
 "old-photos.7z"
 
-"childhool\family\" -"*copias\"
+"childhood\family\" -"*copias\"
 "trips and holidays\" -"old-*.jpg" -"old-*.png"
 "More pictures\" -"backup\" -"discarded*\"
 
 "best-photo-editor.exe"
 ```
+
+**Single files must be directly under the base path**, so this is not allowed for instance `"programs\best-photo-editor.exe"`
+
 ### Exclusions
 Each folder can have one or more exclusions. Let's look at an example:
 
 ```
 "2018\" -"*.thumb" -"*backup.png"
-"childhool\family\" -"*copias\"
+"childhood\family\" -"*copias\"
 "trips and holidays\" -"old-*.jpg" -"old-*.png" -"trash.jpg"
 "More pictures\" -"backup\" -"discarded*\"
 ```
@@ -294,8 +297,8 @@ Rules:
 - The extensions cannot use "*"
 - Files must have always an extension
 - Folders must always end with "\"
+- Exclusions will only contain a folder or file, never multiple level paths like "copias\other\" or "photos\old*.jpg"
 ```
-
 
 ## Comparing a previously hashed file with the file in the filesystem
 
