@@ -266,7 +266,7 @@ Each folder can have one or more exclusions. Let's look at an example:
 "2018\" -"*.thumb" -"*backup.png"
 "childhood\family\" -"*copias\"
 "trips and holidays\" -"old-*.jpg" -"old-*.png" -"trash.jpg"
-"More pictures\" -"backup\" -"discarded*\"
+"More pictures\" -"backup\" -"discarded*\" -":specific\folder_path\"
 ```
 
 The example contains all possible exclusion patterns:
@@ -277,10 +277,11 @@ The example contains all possible exclusion patterns:
 4. Specific files: -"trash.jpg"
 5. Folders with a folder name starting with anything but ending with a specific set of characters: -"*copias\"
 6. Folders with a folder name starting with a specific set of characters and ending with anything: -"discarded*\"
-7. Specific folders: -"backup\"
+7. Specific folders (or subfolders): -"backup\"
+8. Specific folder path: -":specific\folder_path\" the colon at the beginning of the path is telling PowerDirHasher that the path has to be exactly under the folder to be processed. Only in this case paths with more than one level (folder\subfolder) are allowed. The "*" character is not allowed in this case.
 ```
 
-NOTE: When a folder is specified, then PowerDirHasher will exclude all files under that folder or under any subfolders that are inside that folder. If in the file path a folder exists matching that name pattern BUT is not under the base path, then it will be ignored.
+NOTE1: When a folder is specified, then PowerDirHasher will exclude all files under that folder or under any subfolders that are inside that folder. If in the file path a folder exists matching that name pattern BUT is not under the folder to be processed, then it will be ignored.
 For example, if there is this situation: 
 ```
 base_path:
@@ -289,7 +290,14 @@ base_path:
 items:
 "2020\" -"my_photos*\"
 ```
-then it will exclude the files of any folder that starts with "my_photos" that is UNDER the folder "2020" but it will not exclude the whole thing just because the base path "D:\my_photos\" contains that folder name, it will only work with what is under the base path.
+then it will exclude the files of any folder that starts with "my_photos" that is UNDER the folder "2020" but it will not exclude the whole thing just because the folder/item to be processed "D:\my_photos\2020\" contains that folder name; it will only work with what is under the folder to be processed.
+
+NOTE2:
+Please make sure that you understand the difference between:
+`"More pictures\" -"folder_name\"`
+and
+`"More pictures\" -":folder_name\"`
+The first option will include ANY folder with the name "folder_name", regardless of it is directly under "More pictures", or if its any subfolder or sub sub folder with that name. However the second option will literally only exclude files that are under `More pictures\folder_name`
 
 ```
 Rules:
@@ -297,7 +305,7 @@ Rules:
 - The extensions cannot use "*"
 - Files must have always an extension
 - Folders must always end with "\"
-- Exclusions will only contain a folder or file, never multiple level paths like "copias\other\" or "photos\old*.jpg"
+- Exclusions will only contain a folder or file, never multiple level paths like "copias\other\" or "photos\old*.jpg", unless the colon ":" is used to tell PowerDirHasher that the path to be excluded goes directly under the folder to be processed ":copias\other\".
 ```
 
 ## Comparing a previously hashed file with the file in the filesystem

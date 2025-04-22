@@ -10,11 +10,12 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.1"
+$scriptVersion = "0.6.2"
 
 # Track script success/failure
 $global:scriptFailed = $false
 
+$script:currentProcessingFolder = $null
 
 # ======================================================================
 # Helper functions
@@ -428,24 +429,28 @@ function Validate-ExclusionPatterns {
         $isFolder = $exclusion.EndsWith('\')
         
         if ($isFolder) {
-            # For folder exclusions, check if the path (without the trailing backslash) contains any backslashes
-            $folderPath = $exclusion.Substring(0, $exclusion.Length - 1)
-            if ($folderPath.Contains('\')) {
-                $invalidExclusions += "Exclusion '$exclusion' contains multiple folder levels, which is not allowed"
-                continue
+            # Check if it's an exact path exclusion (starts with ":")
+            if ($exclusion.StartsWith(':')) {
+                # For exact path exclusions, wildcards are not allowed
+                if ($exclusion.Contains('*')) {
+                    $invalidExclusions += "Exact path exclusion '$exclusion' contains wildcard (*), which is not allowed. Exact path exclusions represent real file paths."
+                    continue
+                }
+                # For exact path exclusions, multiple levels are allowed
+            }
+            else {
+                # For regular folder exclusions, check if it contains multiple levels
+                $folderName = $exclusion.TrimEnd('\')
+                if ($folderName.Contains('\')) {
+                    $invalidExclusions += "Exclusion '$exclusion' contains multiple levels (multiple '\'), this is only allowed for exact path exclusions that start with ':'."
+                    continue
+                }
             }
         }
         else {
-
             # If not a folder, it must be a file with an extension
             if (-not $exclusion.Contains('.')) {
                 $invalidExclusions += "Exclusion '$exclusion' is not a valid file (missing extension) or folder (must end with \)"
-                continue
-            }
-
-            # For file exclusions, check if the path contains any backslashes
-            if ($exclusion.Contains('\')) {
-                $invalidExclusions += "Exclusion '$exclusion' contains folder paths, which is not allowed for single files"
                 continue
             }
             
@@ -459,6 +464,12 @@ function Validate-ExclusionPatterns {
             # Check if file has an extension
             if ($extension -eq '.') {
                 $invalidExclusions += "Exclusion '$exclusion' is a file without an extension, this is not allowed."
+                continue
+            }
+            
+            # Check if it contains multiple levels
+            if ($exclusion.Contains('\')) {
+                $invalidExclusions += "Exclusion '$exclusion' contains multiple levels (multiple '\'), this is not allowed for file exclusions."
                 continue
             }
         }
@@ -489,13 +500,18 @@ function Test-ExclusionMatch {
         $directoryPath = $directoryPath.Substring(4)
     }
     
-    # Get relative path if we have a global base path
+    # Get relative path from the base path
     $relativePath = $directoryPath
     if ($null -ne $script:hashTaskBasePath) {
         # Check if the path starts with the base path
         if ($directoryPath.StartsWith($script:hashTaskBasePath, [StringComparison]::OrdinalIgnoreCase)) {
             # Extract only the portion after the base path
             $relativePath = $directoryPath.Substring($script:hashTaskBasePath.Length)
+            
+            # Remove leading backslash if present
+            if ($relativePath.StartsWith('\')) {
+                $relativePath = $relativePath.Substring(1)
+            }
         } else {
             Write-Host "ERROR: the base path of the hashtask file does not match the path of the file being processed" -ForegroundColor Red
             exit 1
@@ -505,35 +521,61 @@ function Test-ExclusionMatch {
         exit 1
     }
     
+    # Calculate the path relative to the current processing folder
+    $relativeToProcessingFolder = $relativePath
+    if (-not [string]::IsNullOrEmpty($script:currentProcessingFolder)) {
+        if ($relativePath.StartsWith($script:currentProcessingFolder, [StringComparison]::OrdinalIgnoreCase)) {
+            $relativeToProcessingFolder = $relativePath.Substring($script:currentProcessingFolder.Length)
+            # Remove leading backslash if present
+            if ($relativeToProcessingFolder.StartsWith('\')) {
+                $relativeToProcessingFolder = $relativeToProcessingFolder.Substring(1)
+            }
+        }
+    }
+    
     foreach ($exclusion in $Exclusions) {
         $exclusionIsFolder = $exclusion.EndsWith('\')
         
         if ($exclusionIsFolder) {
-            # For folder exclusions, check if this folder appears in the path
-            # Remove trailing backslash from exclusion for comparison
-            $folderName = $exclusion.TrimEnd('\')
-            
-            # Check specifically for this folder as a complete segment in the path
-            $pathParts = $relativePath.Split([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-            
-            if ($folderName.Contains('*')) {
-                # Handle wildcard pattern
-                $wildcardIndex = $folderName.IndexOf('*')
-                $patternStart = $folderName.Substring(0, $wildcardIndex)
-                $patternEnd = $folderName.Substring($wildcardIndex + 1)
+            # Check if this is an exact path exclusion (starts with ":")
+            if ($exclusion.StartsWith(':')) {
+                # Remove the ":" prefix for comparison
+                $exactPath = $exclusion.Substring(1)
                 
-                foreach ($part in $pathParts) {
-                    if ($part -and 
-                        (($patternStart -eq "" -or $part.StartsWith($patternStart)) -and 
-                         ($patternEnd -eq "" -or $part.EndsWith($patternEnd)))) {
-                        return $true
-                    }
+                # For exact path exclusions, compare against the path relative to the current folder
+                if ($relativeToProcessingFolder.StartsWith($exactPath, [StringComparison]::OrdinalIgnoreCase) -or
+                    "$relativeToProcessingFolder\" -eq $exactPath) {
+                    return $true
                 }
             }
             else {
-                # Exact folder name match
-                if ($pathParts -contains $folderName) {
-                    return $true
+                # For standard folder exclusions, check if this folder appears in the path
+                # Remove trailing backslash from exclusion for comparison
+                $folderName = $exclusion.TrimEnd('\')
+                
+                # Check specifically for this folder as a complete segment in the relative path
+                # Use relativeToProcessingFolder instead of relativePath
+                $pathParts = $relativeToProcessingFolder.Split([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+                
+                if ($folderName.Contains('*')) {
+                    # Handle wildcard pattern
+                    $wildcardIndex = $folderName.IndexOf('*')
+                    $patternStart = $folderName.Substring(0, $wildcardIndex)
+                    $patternEnd = $folderName.Substring($wildcardIndex + 1)
+                    
+                    foreach ($part in $pathParts) {
+                        if ($part -and 
+                            (($patternStart -eq "" -or $part.StartsWith($patternStart)) -and 
+                             ($patternEnd -eq "" -or $part.EndsWith($patternEnd)))) {
+                            return $true
+                        }
+                    }
+                }
+                else {
+                    # Exact folder name match
+                    if ($pathParts -contains $folderName) {
+                        return $true
+                    }
                 }
             }
         }
@@ -715,7 +757,7 @@ function Write-Log {
             # Store in memory array instead of writing to file
             $script:logOutputCapture += "$timestamp - $Message"
         } elseif ($script:operationPathType -eq "Directory") {
-            "$timestamp - $Message" | Out-File -FilePath $LogFilePath -Append -Encoding UTF8
+            "$timestamp - $Message" | Out-File -LiteralPath $LogFilePath -Append -Encoding UTF8
         } else {
             Write-Host "For some weird reason the operationPathType is not properly set. Please review"
             exit 1
@@ -2342,6 +2384,22 @@ function Start-FileProcessing {
     $resultMessage = ""
     $results = @()  # Array to store all results in memory
     
+    # Set the current processing folder
+    if ($script:operationPathType -eq "HashTask") {
+        # For HashTask, extract the folder being processed from DirectoryPath and basePath
+        if ($null -ne $script:hashTaskBasePath -and $DirectoryPath.StartsWith($script:hashTaskBasePath, [StringComparison]::OrdinalIgnoreCase)) {
+            $script:currentProcessingFolder = $DirectoryPath.Substring($script:hashTaskBasePath.Length)
+            # Remove leading backslash if present
+            if ($script:currentProcessingFolder.StartsWith('\')) {
+                $script:currentProcessingFolder = $script:currentProcessingFolder.Substring(1)
+            }
+        }
+    } else {
+        # For direct directory processing, use the directory name
+        $script:currentProcessingFolder = ""
+    }
+
+
     try {
         # Ensure directory path ends with a backslash for relative path calculations
         $normalizedDirectoryPath = Ensure-TrailingBackslash $directoryPath
@@ -2387,24 +2445,24 @@ function Start-FileProcessing {
         
         # Initialize log file
         if ($script:operationPathType -eq "HashTask") {
-            "# Processing folder" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# Processing folder" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         }
         else{
-            "# File Processing Utility Log" | Out-File -FilePath $logFilePath -Encoding UTF8
+            "# File Processing Utility Log" | Out-File -LiteralPath $logFilePath -Encoding UTF8
         }
-        "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-        "# Directory processed: $directoryPath" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-        "# Mode: $Mode" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+        "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+        "# Directory processed: $directoryPath" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+        "# Mode: $Mode" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         
         # Log exclusions if any
         if ($Exclusions.Count -gt 0) {
             $quotedExclusions = $exclusions | ForEach-Object { "`"$_`"" }
-            "# Exclusions: $($quotedExclusions -join ', ')" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# Exclusions: $($quotedExclusions -join ', ')" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             Write-Log -Message "Using exclusion patterns: $($quotedExclusions -join ', ')" -LogFilePath $logFilePath -ForegroundColor Yellow
         }
         
-        "# Note: Symlinks are automatically skipped (not hashed)" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-        "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+        "# Note: Symlinks are automatically skipped (not hashed)" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+        "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         
         # Verify the specified directory exists
 
@@ -2942,7 +3000,7 @@ function Start-FileProcessing {
         
         if ($logFilePath -and (Test-Path -LiteralPath $logFilePath)) {
             "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC - UNHANDLED ERROR: $errorMessage" | 
-                Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         }
         else {
             Write-Host "CRITICAL ERROR: $errorMessage" -ForegroundColor Red
@@ -2964,6 +3022,9 @@ function Start-FileProcessing {
     finally {
         # This block ALWAYS runs, even if there are errors
         
+        # Reset the current processing folder
+        $script:currentProcessingFolder = $null
+
         # Only write the summary if we have a log file
         if ($logFilePath -and (Test-Path -LiteralPath $logFilePath)) {
             # Ensure endTime is set
@@ -2971,51 +3032,51 @@ function Start-FileProcessing {
             $duration = $endTime - $startTime
             
             # Add a properly formatted summary to the end of the log file
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             
             if ($global:scriptFailed) {
-                "# OPERATION SUMMARY - FAILED WITH ERRORS" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# OPERATION SUMMARY - FAILED WITH ERRORS" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             } else {
-                "# OPERATION SUMMARY - COMPLETED SUCCESSFULLY" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# OPERATION SUMMARY - COMPLETED SUCCESSFULLY" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Started:  $($startTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Finished: $($endTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Duration: $($duration.ToString('hh\:mm\:ss'))" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Hash algorithms used: $($algorithms -join ', ')" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Started:  $($startTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Finished: $($endTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Duration: $($duration.ToString('hh\:mm\:ss'))" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Hash algorithms used: $($algorithms -join ', ')" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             
             if ($fileCount -gt 0) {
-                "# Total files processed: $fileCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# Total files processed: $fileCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                 
                 if ($Mode -ne "Hash") {
-                    "# Files identical: $identicalCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files added: $addedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files modified: $modifiedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files deleted: $deletedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files excluded: $excludedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files reincluded: $reincludedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files corrupted: $corruptedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                    "# Files identical: $identicalCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files added: $addedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files modified: $modifiedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files deleted: $deletedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files excluded: $excludedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files reincluded: $reincludedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files corrupted: $corruptedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                 }
                 
-                "# Files with errors: $errorCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                "# Symlinks skipped: $symlinkCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# Files with errors: $errorCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                "# Symlinks skipped: $symlinkCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             
             if (-not $global:scriptFailed -and $Mode -ne "Report" -and $outputHashFile -and (Test-Path -LiteralPath $outputHashFile)) {
-                "# Hash results file: $normalizedOutputHashFile" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# Hash results file: $normalizedOutputHashFile" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             } 
             elseif ($Mode -eq "Report") {
-                "# No hash results file was created (Report mode)" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# No hash results file was created (Report mode)" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             else {
-                "# No hash results file was created due to errors" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# No hash results file was created due to errors" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         }
         
         # Final console output
@@ -3144,15 +3205,15 @@ function Start-SingleFileProcessing {
         
         # Initialize log file
         if ($script:operationPathType -eq "HashTask") {
-            "# Processing single file" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# Processing single file" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         }
         else{
-            "# File Processing Utility Log" | Out-File -FilePath $logFilePath -Encoding UTF8
+            "# File Processing Utility Log" | Out-File -LiteralPath $logFilePath -Encoding UTF8
         }
-        "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-        "# File processed: $FilePath" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-        "# Mode: $Mode" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-        "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+        "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+        "# File processed: $FilePath" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+        "# Mode: $Mode" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+        "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         
         # Verify the specified file exists
         if (-not (Test-Path -LiteralPath $longFilePath -PathType Leaf)) {
@@ -3613,7 +3674,7 @@ function Start-SingleFileProcessing {
         
         if ($logFilePath -and (Test-Path -LiteralPath $logFilePath)) {
             "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC - UNHANDLED ERROR: $errorMessage" | 
-                Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         }
         else {
             Write-Host "CRITICAL ERROR: $errorMessage" -ForegroundColor Red
@@ -3642,49 +3703,49 @@ function Start-SingleFileProcessing {
             $duration = $endTime - $startTime
             
             # Add a properly formatted summary to the end of the log file
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             
             if ($global:scriptFailed) {
-                "# OPERATION SUMMARY - FAILED WITH ERRORS" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# OPERATION SUMMARY - FAILED WITH ERRORS" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             } else {
-                "# OPERATION SUMMARY - COMPLETED SUCCESSFULLY" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# OPERATION SUMMARY - COMPLETED SUCCESSFULLY" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Started:  $($startTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Finished: $($endTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Duration: $($duration.ToString('hh\:mm\:ss'))" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-            "# Hash algorithms used: $($algorithms -join ', ')" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Started:  $($startTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Finished: $($endTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Duration: $($duration.ToString('hh\:mm\:ss'))" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+            "# Hash algorithms used: $($algorithms -join ', ')" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             
             if ($fileCount -gt 0) {
-                "# Total files processed: $fileCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# Total files processed: $fileCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                 
                 if ($Mode -ne "Hash") {
-                    "# Files identical: $identicalCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files added: $addedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files modified: $modifiedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files deleted: $deletedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                    "# Files corrupted: $corruptedCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                    "# Files identical: $identicalCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files added: $addedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files modified: $modifiedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files deleted: $deletedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                    "# Files corrupted: $corruptedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                 }
                 
-                "# Files with errors: $errorCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
-                "# Symlinks skipped: $symlinkCount" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# Files with errors: $errorCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+                "# Symlinks skipped: $symlinkCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             
             if (-not $global:scriptFailed -and $Mode -ne "Report" -and $outputHashFile -and (Test-Path -LiteralPath $outputHashFile)) {
-                "# Hash results file: $normalizedOutputHashFile" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# Hash results file: $normalizedOutputHashFile" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             } 
             elseif ($Mode -eq "Report") {
-                "# No hash results file was created (Report mode)" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# No hash results file was created (Report mode)" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             else {
-                "# No hash results file was created due to errors" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+                "# No hash results file was created due to errors" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
             }
             
-            "# ======================================================================" | Out-File -FilePath $logFilePath -Append -Encoding UTF8
+            "# ======================================================================" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
         }
         
         # Final console output
@@ -3783,11 +3844,11 @@ function Start-TaskProcessing {
     }
     
     # Initialize the consolidated log file
-    "# PowerDirHasher Task Processing Log" | Out-File -FilePath $consolidatedLogFilePath -Encoding UTF8
-    "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
-    "# Task file processed: $TaskFilePath" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
-    "# Operation mode: $Mode" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
-    "# ======================================================================" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+    "# PowerDirHasher Task Processing Log" | Out-File -LiteralPath $consolidatedLogFilePath -Encoding UTF8
+    "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
+    "# Task file processed: $TaskFilePath" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
+    "# Operation mode: $Mode" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
+    "# ======================================================================" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
     
     try {
         # Read the task file content
@@ -3873,7 +3934,7 @@ function Start-TaskProcessing {
                         $message = "ERROR in task '$($item.Path)': $error"
                         Write-Host $message -ForegroundColor Red
                         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                     }
                     $hasInvalidExclusions = $true
                 }
@@ -3888,13 +3949,13 @@ function Start-TaskProcessing {
         $message = "Base path: $basePath"
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $totalItems = $items.Count
         $message = "Found $totalItems items to process."
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         # Process each item
         foreach ($item in $items) {
@@ -3912,7 +3973,7 @@ function Start-TaskProcessing {
                     $message = "ERROR: '$itemPath' contains multiple folder levels. Individual file specifications cannot include subdirectories."
                     Write-Host $message -ForegroundColor Red
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                    "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                    "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                     $failedItems++
                     continue
                 }
@@ -3921,7 +3982,7 @@ function Start-TaskProcessing {
                     $message = "ERROR: '$itemPath' is not a folder or a supported file. All folders must end in '\'. Files without extension are not supported."
                     Write-Host $message -ForegroundColor Red
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                    "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                    "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                     $failedItems++
                     continue
                 }
@@ -3937,17 +3998,17 @@ function Start-TaskProcessing {
                 $message = "======================================================================="
                 Write-Host $message -ForegroundColor Cyan
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 
                 $message = "Processing file: $itemPath"
                 Write-Host $message -ForegroundColor Cyan
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 
                 $message = "Full path: $fullPath"
                 Write-Host $message -ForegroundColor Cyan
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 
                 # Initialize file result
                 $fileResult = [PSCustomObject]@{
@@ -3972,7 +4033,7 @@ function Start-TaskProcessing {
                     $message = "ERROR: File does not exist: $fullPath"
                     Write-Host $message -ForegroundColor Red
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                    "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                    "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                     
                     $taskSummary += $fileResult
                     continue
@@ -3998,7 +4059,7 @@ function Start-TaskProcessing {
                     # Write captured log output to consolidated log
                     if ($result.LogOutput) {
                         $result.LogOutput | ForEach-Object {
-                            $_ | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                            $_ | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                         }
                     }
                     
@@ -4027,7 +4088,7 @@ function Start-TaskProcessing {
                     $message = "Completed processing file: $fullPath"
                     Write-Host $message -ForegroundColor Green
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                    "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                    "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 }
                 catch {
                     # Handle file processing error
@@ -4042,7 +4103,7 @@ function Start-TaskProcessing {
                     $message = "ERROR: Failed to process file: $fullPath. Error: $_"
                     Write-Host $message -ForegroundColor Red
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                    "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                    "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 }
                 
                 # Add to task summary
@@ -4061,24 +4122,24 @@ function Start-TaskProcessing {
             $message = "======================================================================="
             Write-Host $message -ForegroundColor Cyan
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             $message = "Processing: $itemPath"
             Write-Host $message -ForegroundColor Cyan
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             $message = "Full path: $fullPath"
             Write-Host $message -ForegroundColor Cyan
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             if ($exclusions.Count -gt 0) {
                 $quotedExclusions = $exclusions | ForEach-Object { "`"$_`"" }
                 $message = "With exclusions: $($quotedExclusions -join ', ')"
                 Write-Host $message -ForegroundColor Yellow
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             }
             
             # Initialize directory result
@@ -4103,7 +4164,7 @@ function Start-TaskProcessing {
                 $message = "ERROR: Directory does not exist: $fullPath"
                 Write-Host $message -ForegroundColor Red
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 
                 $taskSummary += $directoryResult
                 continue
@@ -4129,7 +4190,7 @@ function Start-TaskProcessing {
                 # Write captured log output to consolidated log
                 if ($result.LogOutput) {
                     $result.LogOutput | ForEach-Object {
-                        $_ | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                        $_ | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                     }
                 }
                 
@@ -4158,7 +4219,7 @@ function Start-TaskProcessing {
                 $message = "Completed processing directory: $fullPath"
                 Write-Host $message -ForegroundColor Green
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             }
             catch {
                 # Handle directory processing error
@@ -4173,7 +4234,7 @@ function Start-TaskProcessing {
                 $message = "ERROR: Failed to process directory: $fullPath. Error: $_"
                 Write-Host $message -ForegroundColor Red
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             }
             
             # Add to task summary
@@ -4188,79 +4249,79 @@ function Start-TaskProcessing {
         $message = "======================================================================="
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "TASK SUMMARY"
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "======================================================================="
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         # Write standard summary info
         $message = "Task File: $TaskFilePath"
         Write-Host $message -ForegroundColor White
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Operation Mode: $Mode"
         Write-Host $message -ForegroundColor White
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Total Items: $totalItems"
         Write-Host $message -ForegroundColor White
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Successful Items: $successfulItems"
         Write-Host $message -ForegroundColor $(if ($successfulItems -eq $totalItems) { "Green" } else { "White" })
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Failed Items: $failedItems"
         Write-Host $message -ForegroundColor $(if ($failedItems -gt 0) { "Red" } else { "White" })
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Total Files Processed: $totalFilesProcessed"
         Write-Host $message -ForegroundColor White
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Total Errors (including access errors): $totalErrorCount"
         Write-Host $message -ForegroundColor $(if ($totalErrorCount -gt 0) { "Red" } else { "Green" })
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
 
         $message = "Total Access Errors: $totalAccessErrorCount"
         Write-Host $message -ForegroundColor $(if ($totalAccessErrorCount -gt 0) { "Red" } else { "Green" })
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "Total Duration: $($taskDuration.ToString('hh\:mm\:ss'))"
         Write-Host $message -ForegroundColor White
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         # Write items details
         $message = "======================================================================="
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "ITEM DETAILS"
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         $message = "======================================================================="
         Write-Host $message -ForegroundColor Cyan
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         # Write detailed summary for each item
         foreach ($itemResult in $taskSummary) {
@@ -4273,52 +4334,52 @@ function Start-TaskProcessing {
             $message = "Item: $($itemResult.Item)"
             Write-Host $message -ForegroundColor White
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             $message = "Status: $($itemResult.Status)"
             Write-Host $message -ForegroundColor $statusColor
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             $message = "Files Processed: $($itemResult.FilesProcessed)"
             Write-Host $message -ForegroundColor White
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             $message = "Total Errors (including file access errors): $($itemResult.ErrorCount)"
             Write-Host $message -ForegroundColor $(if ($itemResult.ErrorCount -gt 0) { "Red" } else { "Green" })
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
 
             if ($itemResult.AccessErrorCount){
                 $message = "File Access Errors: $($itemResult.AccessErrorCount)"
                 Write-Host $message -ForegroundColor $(if ($itemResult.AccessErrorCount -gt 0) { "Red" } else { "Green" })
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             }
             
             $message = "Duration: $($itemResult.Duration.ToString('hh\:mm\:ss'))"
             Write-Host $message -ForegroundColor White
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             
             if (-not [string]::IsNullOrEmpty($itemResult.Message)) {
                 $message = "Message: $($itemResult.Message)"
                 Write-Host $message -ForegroundColor White
                 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-                "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+                "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
             }
             
             $message = "-----------------------------------------------------------------------"
             Write-Host $message -ForegroundColor Cyan
             $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-            "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         }
         
         $message = "Task processing complete. Log saved to: $consolidatedLogFilePath"
         Write-Host $message -ForegroundColor Green
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         # After task processing is complete, require typing "menu" or "close" to proceed
         Write-Host "`nType 'menu' and press Enter to return to the main menu" -ForegroundColor Yellow
@@ -4346,7 +4407,7 @@ function Start-TaskProcessing {
         $message = "CRITICAL ERROR: Failed to process task file: $_"
         Write-Host $message -ForegroundColor Red
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -FilePath $consolidatedLogFilePath -Append -Encoding UTF8
+        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
         
         # After error, require typing "menu" or "close" to proceed
         Write-Host "`nType 'menu' and press Enter to return to the main menu" -ForegroundColor Yellow
