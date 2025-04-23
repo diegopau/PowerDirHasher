@@ -8,6 +8,7 @@ I provide this script as it is, with no plans to add more features or enhancemen
 
 I am interested in bug reports, please open issues for those.
 
+![PowerDirHasher screenshot](screenshot.png)
 
 ## USE AT YOUR OWN RISK
 
