@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.2"
+$scriptVersion = "0.6.3"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -469,7 +469,7 @@ function Validate-ExclusionPatterns {
             
             # Check if it contains multiple levels
             if ($exclusion.Contains('\')) {
-                $invalidExclusions += "Exclusion '$exclusion' contains multiple levels (multiple '\'), this is not allowed for file exclusions."
+                $invalidExclusions += "Exclusion '$exclusion' contains folders in the path, this is not allowed for file exclusions."
                 continue
             }
         }
@@ -895,7 +895,8 @@ function Create-HashOutputFile {
         [string]$SourcePath = "",
         [string]$SourceType = "",  # "HashTask" or "Directory" 
         [string]$ReferenceHashFile = "", # Name of reference .hashes file when applicable
-        [bool]$SetReadOnly = $true  # New parameter to control read-only setting
+        [bool]$SetReadOnly = $true,  # Parameter to control read-only setting
+        [string[]]$Exclusions = @()  # New parameter for exclusion patterns
     )
     
     try {
@@ -930,6 +931,16 @@ function Create-HashOutputFile {
             -not [string]::IsNullOrEmpty($ReferenceHashFile)) {
             $sanitizedRefFileName = Sanitize-TextForCSV -Text $ReferenceHashFile
             $commentHeader += "# Hashes file used as reference: $sanitizedRefFileName"
+        }
+
+        # Add exclusions information if any
+        if ($Exclusions.Count -gt 0) {
+            # Exclusions already have quotes removed by Parse-ItemLine
+            $sanitizedExclusions = $Exclusions | ForEach-Object { 
+                Sanitize-TextForCSV -Text $_
+            }
+            $formattedExclusions = $sanitizedExclusions -join " | "
+            $commentHeader += "# Exclusions: $formattedExclusions"
         }
         
         $commentHeader += "# Files processed: $FileCount"
@@ -2820,7 +2831,7 @@ function Start-FileProcessing {
                 
 
                     # Write the hash results file using Create-HashOutputFile
-                    $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ExcludedCount $excludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -SetReadOnly $script:generalSettings.SetHashFilesReadOnly
+                    $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ExcludedCount $excludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
                    
                     $resultMessage = "Hash operation completed successfully"
                     # If there were file access errors we still consider it successful but the message will be different
@@ -2964,7 +2975,7 @@ function Start-FileProcessing {
                 }
                 
                 # Write hash results file using Create-HashOutputFile
-                $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ModifiedCount $modifiedCount -DeletedCount $deletedCount -IdenticalCount $identicalCount -CorruptedCount $corruptedCount -ExcludedCount $excludedCount -ReincludedCount $reincludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -ReferenceHashFile $(if ($latestHashesFile) { $latestHashesFile.Name } else { "" }) -SetReadOnly $script:generalSettings.SetHashFilesReadOnly
+                $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ModifiedCount $modifiedCount -DeletedCount $deletedCount -IdenticalCount $identicalCount -CorruptedCount $corruptedCount -ExcludedCount $excludedCount -ReincludedCount $reincludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -ReferenceHashFile $(if ($latestHashesFile) { $latestHashesFile.Name } else { "" }) -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
                 
                 # Summarize results
                 Write-Log -Message "----------------------------------------------" -LogFilePath $logFilePath -ForegroundColor Cyan
