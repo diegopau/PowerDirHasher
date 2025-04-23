@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.3"
+$scriptVersion = "0.6.4"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -645,11 +645,20 @@ function Get-MultipleFileHashes {
 
         # Determine if we need to show progress based on file size
         $progressThresholdMB = $script:logSettings.MinimumFileSizeForProgressReport
+        # Enforce minimum threshold of 100MB - treat anything less as 0
+        if ($progressThresholdMB -gt 0 -and $progressThresholdMB -lt 100) {
+            $progressThresholdMB = 0
+        }
         $fileSizeMB = [math]::Ceiling($stream.Length / 1MB)
         $showProgress = ($progressThresholdMB -gt 0) -and ($fileSizeMB -ge $progressThresholdMB)
 
+        # Define the update frequency (50MB)
+        $updateFrequencyMB = 50
+
         if ($showProgress) {
             $fileName = [System.IO.Path]::GetFileName($FilePath)
+            # Write the static filename line first
+            Write-Host "Hashing: $fileName"
         }
 
         # 4KB buffer for reading matching NTFS default cluster size and Windows default memory page size
@@ -672,9 +681,10 @@ function Get-MultipleFileHashes {
                     $totalBytesRead += $bytesRead
                     $currentMB = [math]::Floor($totalBytesRead / 1MB)
                     
-                    if ($currentMB -gt $lastReportedMB) {
-                        # Use carriage return to overwrite the same line
-                        Write-Host "`rProgress for file $fileName`: ${currentMB}MB/${fileSizeMB}MB" -NoNewline
+                    # Only update when we've processed at least another updateFrequencyMB
+                    if (($currentMB - $lastReportedMB) -ge $updateFrequencyMB) {
+                        # Just print the progress numbers (will be overwritten)
+                        Write-Host "`r${currentMB}MB/${fileSizeMB}MB" -NoNewline
                         $lastReportedMB = $currentMB
                     }
                 }
@@ -3098,8 +3108,14 @@ function Start-FileProcessing {
             }
         } else {
             Write-Host "`nOperation completed successfully." -ForegroundColor Green
-            if ($logFilePath -and (Test-Path -LiteralPath $logFilePath)) {
-                Write-Host "Log file saved to: $logFilePath" -ForegroundColor Cyan
+            if (-not $SuppressMenu) {
+                if ($logFilePath -and (Test-Path -LiteralPath $logFilePath)) {
+                    Write-Host "Log file saved to: $logFilePath" -ForegroundColor Cyan
+                }
+            } else {
+                if ($logFilePath -and (Test-Path -LiteralPath $logFilePath)) {
+                    Write-Host "Log information will be added to the file: $logFilePath" -ForegroundColor Cyan
+                }
             }
             if ($Mode -ne "Report" -and $outputHashFile -and (Test-Path -LiteralPath $outputHashFile)) {
                 Write-Host "Hash results saved to: $normalizedOutputHashFile" -ForegroundColor Cyan
@@ -4199,6 +4215,7 @@ function Start-TaskProcessing {
                 $result = Start-FileProcessing -DirectoryPath $fullPath -Mode $Mode -LogPrefix $dirLogPrefix -CustomLogFilePath $consolidatedLogFilePath -SuppressMenu -CaptureLogOutput -Exclusions $exclusions -TaskFilePath $TaskFilePath
                 
                 # Write captured log output to consolidated log
+                Write-Host "Adding log info to the file: $logFilePath" -ForegroundColor Cyan
                 if ($result.LogOutput) {
                     $result.LogOutput | ForEach-Object {
                         $_ | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
