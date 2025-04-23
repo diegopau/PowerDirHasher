@@ -1,0 +1,2 @@
+just do this in Powershell:
+(Get-Item "file_name.txt").LastWriteTime = Get-Date
