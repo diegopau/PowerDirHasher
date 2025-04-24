@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.4"
+$scriptVersion = "0.6.5"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -2671,9 +2671,10 @@ function Start-FileProcessing {
                 # Estimate file count
                 Write-Log -Message "Estimating total file count (this might take a moment)..." -LogFilePath $logFilePath -ForegroundColor Cyan
                 $estimatedCount = (Get-ChildItem -LiteralPath $longDirectoryPath -File -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count
-                Write-Log -Message "Found approximately $estimatedCount files to process." -LogFilePath $logFilePath -ForegroundColor Cyan
+                Write-Log -Message "Found $estimatedCount files to process." -LogFilePath $logFilePath -ForegroundColor Cyan
                 
-                if ($estimatedCount -gt 100000) {
+                if ((-not $script:operationPathType -eq "HashTask") -and ($estimatedCount -gt 100000)) {
+                    
                     Write-Log -Message "WARNING: Very large directory detected ($estimatedCount files). This might take a long time." -LogFilePath $logFilePath -ForegroundColor Yellow
                     $largeConfirmation = Read-Host "Do you want to continue? (Y/N)"
                     if ($largeConfirmation -ne "Y") {
