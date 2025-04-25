@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.5"
+$scriptVersion = "0.6.6"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -147,6 +147,11 @@ function Initialize-Settings {
         $script:logFolderPath = $script:settings["paths"]["haslog_folder"]
         $script:hashFolderName = $script:settings["paths"]["subfolder_for_folder_hashes"]
         $script:fileHashFolderName = $script:settings["paths"]["subfolder_for_single_file_hashes"]
+
+        if ($script:hashFolderName -eq $script:fileHashFolderName){
+            Write-Host "Review your settings INI file. The subfolder for folder hashes cannot be the same as the subfolder for single file hashes" -ForegroundColor Red
+            exit 1
+        }
         
         # Parse algorithms
         $algosString = $script:settings["hash files"]["algos"]
@@ -4326,10 +4331,12 @@ function Start-TaskProcessing {
         $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
         "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
 
-        $message = "Total Access Errors: $totalAccessErrorCount"
-        Write-Host $message -ForegroundColor $(if ($totalAccessErrorCount -gt 0) { "Red" } else { "Green" })
-        $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
-        "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
+        if ($totalAccessErrorCount -gt 0){
+            $message = "Total Access Errors: $totalAccessErrorCount"
+            Write-Host $message -ForegroundColor $(if ($totalAccessErrorCount -gt 0) { "Red" } else { "Green" })
+            $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
+            "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
+        }
         
         $message = "Total Duration: $($taskDuration.ToString('hh\:mm\:ss'))"
         Write-Host $message -ForegroundColor White
