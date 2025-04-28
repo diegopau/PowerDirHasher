@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.6"
+$scriptVersion = "0.6.7"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -2739,13 +2739,13 @@ function Start-FileProcessing {
                         }
                         
                         # Skip files in the _00-hashes directory. Here both $file.FullName and $hasOutputDir should have the same format with no \\?\ prefix.
-                        if ($file.FullName.StartsWith($hashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
+                        if ($normalizedFullName.StartsWith($hashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
                             $filesInHashesFoldersCount++
                             return  # Skip to next file
                         }
                         
                         # Skip files in the _00-file_hashes directory. Here both $file.FullName and $singleFilesHashOutputDir should have the same format with no \\?\ prefix.
-                        if ($file.FullName.StartsWith($singleFilesHashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
+                        if ($normalizedFullName.StartsWith($singleFilesHashOutputDir, [StringComparison]::OrdinalIgnoreCase)) {
                             $filesInHashesFoldersCount++
                             return  # Skip to next file
                         }
