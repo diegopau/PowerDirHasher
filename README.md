@@ -1,3 +1,4 @@
+Current project status: **Implemented**. All the functionalities described in this README have been implemented and should work correctly.
 # PowerDirHasher
 
 PowerDirHasher is a PowerShell script designed to do data integrity operations, using hash algorithms, for a folder or list of folders. It works under Windows 10/11.
