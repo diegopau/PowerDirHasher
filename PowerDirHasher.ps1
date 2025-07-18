@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.7"
+$scriptVersion = "0.6.8"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -1506,7 +1506,7 @@ function Get-TaskBasePath {
         
      # Read the task file content
      $longTaskFilePath = Get-LongPath -Path $TaskFilePath
-     $fileContent = Get-Content -LiteralPath $longTaskFilePath -ErrorAction Stop
+     $fileContent = Get-Content -LiteralPath $longTaskFilePath -Encoding UTF8 -ErrorAction Stop
      
      # Parse the .hashtask file
      $currentSection = $null
@@ -3886,7 +3886,7 @@ function Start-TaskProcessing {
     try {
         # Read the task file content
         $longTaskFilePath = Get-LongPath -Path $TaskFilePath
-        $fileContent = Get-Content -LiteralPath $longTaskFilePath -ErrorAction Stop
+        $fileContent = Get-Content -LiteralPath $longTaskFilePath -Encoding UTF8 -ErrorAction Stop
         
         # Parse the .hashtask file
         $currentSection = $null
