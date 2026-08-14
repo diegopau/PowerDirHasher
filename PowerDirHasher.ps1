@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.6.8"
+$scriptVersion = "0.7.0"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -633,7 +633,8 @@ function Get-MultipleFileHashes {
     param (
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
-        [string[]]$Algorithms = @("MD5", "SHA512")
+        [string[]]$Algorithms = @("MD5", "SHA512"),
+        [string]$LogFilePath = ""
     )
 
     try {
@@ -720,7 +721,7 @@ function Get-MultipleFileHashes {
         return $results
     }
     catch {
-        Write-Log "Error processing $FilePath`: $_"
+        Write-Log "Error processing $FilePath`: $_" -LogFilePath $LogFilePath -ForegroundColor Red
         return $null
     }
     finally {
@@ -1064,7 +1065,7 @@ function Process-DeletedFile {
         Write-Log -Message "File was deleted but now exists: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "READDED" -IsPreviouslyAdded $true
         
         try {
-            $result = Add-HashForFile -FilePath $FilePath -Algorithms $Algorithms -Status "READDED" -Comment "Readded files are not verified or compared to previous versions, they are added as if they were new files" -OriginalFileHash $FileHash
+            $result = Add-HashForFile -FilePath $FilePath -Algorithms $Algorithms -Status "READDED" -Comment "Readded files are not verified or compared to previous versions, they are added as if they were new files" -OriginalFileHash $FileHash -LogFilePath $LogFilePath
             
             if ($result.IsError) {
                 $newHashResult = $FileHash.PSObject.Copy()
@@ -1144,7 +1145,7 @@ function Process-ErroredFile {
 
     try {
         $fileInfo = Get-Item -LiteralPath $longFilePath
-        $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms
+        $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         
         if ($hashes) {
             # Create updated hash result
@@ -1229,7 +1230,7 @@ function Process-StandardFile {
         }
         
         # Calculate hashes for verification
-        $hashes = Get-MultipleFileHashes -FilePath $longPath -Algorithms $Algorithms
+        $hashes = Get-MultipleFileHashes -FilePath $longPath -Algorithms $Algorithms -LogFilePath $LogFilePath
         
         if (-not $hashes) {
             # Handle hash calculation failure
@@ -1445,14 +1446,15 @@ function Add-HashForFile {
         [string[]]$Algorithms,
         [string]$Status,
         [string]$Comment,
-        [PSObject]$OriginalFileHash = $null
+        [PSObject]$OriginalFileHash = $null,
+        [string]$LogFilePath = ""
     )
     
     try {
         $longPath = Get-LongPath -Path $FilePath
         $fileInfo = Get-Item -LiteralPath $longPath
         
-        $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms
+        $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         
         if ($hashes) {
             # Create base result or copy from original
@@ -1880,7 +1882,7 @@ function Process-ExistingFileHash {
         
         # Process as a new file
         try {
-            $result = Add-HashForFile -FilePath $filePath -Algorithms $Algorithms -Status "REINCLUDED" -Comment "Reincluded files are not verified or compared to previous versions, they are added as if they were new files"
+            $result = Add-HashForFile -FilePath $filePath -Algorithms $Algorithms -Status "REINCLUDED" -Comment "Reincluded files are not verified or compared to previous versions, they are added as if they were new files" -LogFilePath $LogFilePath
             
             if ($result.IsError) {
                 $newHashResult = $FileHash.PSObject.Copy()
@@ -2073,7 +2075,7 @@ function Find-NewFiles {
 
                 try {
                     # Add hash for the file
-                    $result = Add-HashForFile -FilePath $file.FullName -Algorithms $Algorithms -Status "ADDED" -Comment ""
+                    $result = Add-HashForFile -FilePath $file.FullName -Algorithms $Algorithms -Status "ADDED" -Comment "" -LogFilePath $LogFilePath
 
                     if (-not $result.IsError) {
                         # Update the FilePath property since Add-HashForFile doesn't set it
@@ -2781,7 +2783,7 @@ function Start-FileProcessing {
                         
                         try {
                             # Calculate all hashes in one file read
-                            $hashes = Get-MultipleFileHashes -FilePath $file.FullName -Algorithms $algorithms
+                            $hashes = Get-MultipleFileHashes -FilePath $file.FullName -Algorithms $algorithms -LogFilePath $LogFilePath
                             
                             if ($hashes) {
                                 # Store result in ArrayList with relative path for CSV
@@ -3454,7 +3456,7 @@ function Start-SingleFileProcessing {
                         
                         try {
                             # Calculate all hashes in one file read
-                            $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $algorithms
+                            $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $algorithms -LogFilePath $LogFilePath
                             
                             if ($hashes) {
                                 # Store result in ArrayList with relative path for CSV
@@ -3650,7 +3652,7 @@ function Start-SingleFileProcessing {
                 }
                 else {
                     # File not found in hashes, treat as new file
-                    $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $algorithms
+                    $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $algorithms -LogFilePath $LogFilePath
                     
                     if ($hashes) {
                         # Create result
