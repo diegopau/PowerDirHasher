@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.7.0"
+$scriptVersion = "0.7.1"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -992,7 +992,7 @@ function Create-HashOutputFile {
             # Set the file to read-only if requested
             if ($SetReadOnly) {
                 try {
-                    $file = Get-Item -LiteralPath $longOutputPath
+                    $file = Get-Item -Force -LiteralPath $longOutputPath
                     $file.IsReadOnly = $true
                     Write-Log -Message "Hash file set to read-only for protection" -LogFilePath $LogFilePath -ForegroundColor Green
                 }
@@ -1144,7 +1144,7 @@ function Process-ErroredFile {
     $longFilePath = Get-LongPath -Path $FilePath
 
     try {
-        $fileInfo = Get-Item -LiteralPath $longFilePath
+        $fileInfo = Get-Item -Force -LiteralPath $longFilePath
         $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         
         if ($hashes) {
@@ -1207,7 +1207,7 @@ function Process-StandardFile {
     
     try {
         $longPath = Get-LongPath -Path $FilePath
-        $fileInfo = Get-Item -LiteralPath $longPath
+        $fileInfo = Get-Item -Force -LiteralPath $longPath
         $fileSize = $fileInfo.Length
         $fileModDate = $fileInfo.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
         
@@ -1452,7 +1452,7 @@ function Add-HashForFile {
     
     try {
         $longPath = Get-LongPath -Path $FilePath
-        $fileInfo = Get-Item -LiteralPath $longPath
+        $fileInfo = Get-Item -Force -LiteralPath $longPath
         
         $hashes = Get-MultipleFileHashes -FilePath $FilePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         
@@ -1796,7 +1796,7 @@ function Find-LatestHashesFile {
     
     try {
         # Get all .hashes files in the directory
-        $hashesFiles = Get-ChildItem -LiteralPath $DirectoryPath -Filter "*.hashes" -File -ErrorAction Stop
+        $hashesFiles = Get-ChildItem -LiteralPath $DirectoryPath -Filter "*.hashes" -File -Force -ErrorAction Stop
         
         if ($hashesFiles.Count -eq 0) {
             return $null
@@ -2253,7 +2253,7 @@ function Process-ReportMode {
                 }
                 
                 # File exists, check if modified
-                $fileInfo = Get-Item -LiteralPath $longFilePath
+                $fileInfo = Get-Item -Force -LiteralPath $longFilePath
                 $fileSize = $fileInfo.Length
                 $fileModDate = $fileInfo.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
                 
@@ -2434,7 +2434,7 @@ function Start-FileProcessing {
         $longDirectoryPath = Get-LongPath -Path $normalizedDirectoryPath
 
         # Get directory name for file naming purposes
-        $directoryName = (Get-Item -LiteralPath $longDirectoryPath).Name
+        $directoryName = (Get-Item -Force -LiteralPath $longDirectoryPath).Name
         $timestamp = Get-FormattedTimestamp
         
         # Create log folder if it doesn't exist
@@ -3196,7 +3196,7 @@ function Start-SingleFileProcessing {
     try {
         # Get file info
         $longFilePath = Get-LongPath -Path $FilePath
-        $fileInfo = Get-Item -LiteralPath $longFilePath
+        $fileInfo = Get-Item -Force -LiteralPath $longFilePath
         $fileName = $fileInfo.Name
         $parentDirectory = $fileInfo.Directory.FullName
         $normalizedParentDirectory = Get-NormalizedPath -Path $parentDirectory
@@ -3311,7 +3311,7 @@ function Start-SingleFileProcessing {
         if ($Mode -ne "Hash") {
 
             $fileNameWithExtension = [System.IO.Path]::GetFileName($FilePath)
-            $hashesFiles = Get-ChildItem -LiteralPath $longHashOutputDir -Filter "*_*_$fileNameWithExtension.hashes" -File -ErrorAction SilentlyContinue
+            $hashesFiles = Get-ChildItem -LiteralPath $longHashOutputDir -Filter "*_*_$fileNameWithExtension.hashes" -File -Force -ErrorAction SilentlyContinue
             if ($hashesFiles.Count -gt 0) {
                 $latestHashesFile = $hashesFiles | Sort-Object Name -Descending | Select-Object -First 1
             } else {
