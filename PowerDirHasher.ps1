@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "1.0.0"
+$scriptVersion = "1.0.1"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -1951,6 +1951,23 @@ function Process-ExistingFileHash {
             return Process-ErroredFile -FileHash $FileHash -FilePath $filePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         }
         default {
+			
+			# Auto-heal old entries that were previously hashed. This is because in previous version some windows reserved file names could have been hashes but in recent versions of PowerDirHasher they are always skipped to avoid problems.
+            if (Test-IsReservedFilename -FileName [System.IO.Path]::GetFileName($filePath)) {
+                Write-Log -Message "Auto-corrected old entry to reserved Windows name: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -IsPreviouslyAdded $true
+                
+                $newHashResult = $FileHash.PSObject.Copy()
+                $newHashResult.HashStatus = "RESERVED_NAME_SKIPPED"
+                $newHashResult.Comments = "Windows reserved filename. Auto-corrected from previous scan."
+                
+                return @{
+                    HashResult = $newHashResult
+                    Status = "RESERVED_NAME_SKIPPED"
+                    IsError = $false
+                    ErrorMessage = ""
+                }
+            }
+			
             # Check if the file exists in the filesystem
             if (-not (Test-Path -LiteralPath $longPath -PathType Leaf)) {
                 return Mark-FileAsDeleted -FileHash $FileHash -LogFilePath $LogFilePath
@@ -2090,35 +2107,36 @@ function Find-NewFiles {
             # Get the relative path
             $relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $normalizedDirectoryPath
             
-			 # Catch reserved Windows filenames
-            if (Test-IsReservedFilename -FileName $file.Name) {
-                $relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $normalizedDirectoryPath
-                
-                Write-Log -Message "Skipped Windows reserved filename: $normalizedFilePath" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -Force $true
-                
-                $reservedHashResult = [PSCustomObject]@{
-                    FilePath = $relativePath
-                    HashStatus = "RESERVED_NAME_SKIPPED"
-                    FileSize = $file.Length
-                    ModificationDateUTC = $file.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
-                    Comments = "Windows reserved filename. Cannot be read or processed reliably."
-                }
-                
-                foreach ($algo in $Algorithms) {
-                    $reservedHashResult | Add-Member -MemberType NoteProperty -Name $algo -Value ""
-                }
-                
-                $newResult.newFiles += @{
-                    HashResult = $reservedHashResult
-                    Status = "RESERVED_NAME_SKIPPED"
-                    IsError = $false
-                }
-                continue
-            }
             
             # Check if this is a new file
             
             if ($ExistingFilePaths -notcontains $normalizedFilePath) {
+				
+				 # Catch reserved Windows filenames
+				if (Test-IsReservedFilename -FileName $file.Name) {
+					$relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $normalizedDirectoryPath
+					
+					Write-Log -Message "Skipped Windows reserved filename: $normalizedFilePath" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -Force $true
+					
+					$reservedHashResult = [PSCustomObject]@{
+						FilePath = $relativePath
+						HashStatus = "RESERVED_NAME_SKIPPED"
+						FileSize = $file.Length
+						ModificationDateUTC = $file.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
+						Comments = "Windows reserved filename. Cannot be read or processed reliably."
+					}
+					
+					foreach ($algo in $Algorithms) {
+						$reservedHashResult | Add-Member -MemberType NoteProperty -Name $algo -Value ""
+					}
+					
+					$newResult.newFiles += @{
+						HashResult = $reservedHashResult
+						Status = "RESERVED_NAME_SKIPPED"
+						IsError = $false
+					}
+					continue
+				}
 
                 $newFileCount++
 
