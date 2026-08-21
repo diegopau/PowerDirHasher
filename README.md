@@ -111,6 +111,12 @@ Besides this, in the header of the CSV file (invisible to some CSV viewers) ther
 This "hash" operation should ideally only be used the first time a folder is hashed. For the next times is better to use the other operations (verify with partial sync, sync or verify with full sync) since those will take the latest .hashes file generated as reference and use the information contained there to give you useful information (verifying the file hashes and/or adding hashes for new files) and generate a new .hashes file containing that new status information.
 If instead later on you do again a "hash" operation, then you are basically resetting the history of changes for that folder, generating a new .hashes file that ignores whatever happened previously. This is ok too if for example you want to save space and keep only one .hashes file, but not usually what you would want.
 
+NOTE: there are very specific filenames that are reserved in Windows (even when using them with extensions):
+- CON, PRN, AUX, NUL
+- COM0 through COM9 (Serial ports)
+- LPT0 through LPT9 (Parallel ports)
+Since these are problematic for PowerShell and at the same time they are rare (you can't even easily create them using File Explorer) PowerDirHasher will include them in the .hashes file but mark them with status "RESERVED_NAME_SKIPPED".
+
 ### 2 - Verify files with partial sync
 
 For each of the path/paths indicated it will look for .hashes files and check for each file if the hash stored in the .hashes file matches a newly generated hash for the file. It is equivalent to do a comparison bit-by-bit for all those files.

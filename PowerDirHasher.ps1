@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "0.7.1"
+$scriptVersion = "1.0.0"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -53,6 +53,18 @@ function Get-LongPath {
     
     return "\\?\$Path"
 }
+
+# Function to check if a filename is a Windows reserved device name
+function Test-IsReservedFilename {
+    param (
+        [string]$FileName
+    )
+    # Reserved names: CON, PRN, AUX, NUL, COM0-9, LPT0-9 (case insensitive)
+    # In Windows, even with extensions (like CON.txt), they are treated as devices
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+    return ($baseName -match '^(?i)(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$')
+}
+
 
 # Function to check if long path support is enabled
 function Check-LongPathsSupport {
@@ -905,6 +917,7 @@ function Create-HashOutputFile {
         [int]$ExcludedCount = 0,
         [int]$ReincludedCount = 0,
         [int]$SymlinkCount = 0,
+		[int]$SkippedCount = 0,
         [string[]]$Algorithms,
         [string]$ScriptVersion,
         [string]$LogFilePath,
@@ -971,6 +984,7 @@ function Create-HashOutputFile {
             $commentHeader += "# Files reincluded: $ReincludedCount"
         }
         
+		$commentHeader += "# Files skipped: $SkippedCount"
         $commentHeader += "# Files excluded: $ExcludedCount"
         $commentHeader += "# Symlinks skipped: $SymlinkCount"
         $algorithmsFormatted = $Algorithms -join " "
@@ -1921,6 +1935,15 @@ function Process-ExistingFileHash {
         "EXCLUDED" {
             return Process-ExcludedFile -FileHash $FileHash -LogFilePath $LogFilePath
         }
+		"RESERVED_NAME_SKIPPED" {
+            Write-Log -Message "File remains skipped due to reserved Windows name: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -IsPreviouslyAdded $true
+            return @{
+                HashResult = $FileHash.PSObject.Copy()
+                Status = "RESERVED_NAME_SKIPPED"
+                IsError = $false
+                ErrorMessage = ""
+            }
+        }
         "DELETED" {
             return Process-DeletedFile -FileHash $FileHash -FilePath $filePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         }
@@ -2066,6 +2089,32 @@ function Find-NewFiles {
             
             # Get the relative path
             $relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $normalizedDirectoryPath
+            
+			 # Catch reserved Windows filenames
+            if (Test-IsReservedFilename -FileName $file.Name) {
+                $relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $normalizedDirectoryPath
+                
+                Write-Log -Message "Skipped Windows reserved filename: $normalizedFilePath" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -Force $true
+                
+                $reservedHashResult = [PSCustomObject]@{
+                    FilePath = $relativePath
+                    HashStatus = "RESERVED_NAME_SKIPPED"
+                    FileSize = $file.Length
+                    ModificationDateUTC = $file.LastWriteTimeUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
+                    Comments = "Windows reserved filename. Cannot be read or processed reliably."
+                }
+                
+                foreach ($algo in $Algorithms) {
+                    $reservedHashResult | Add-Member -MemberType NoteProperty -Name $algo -Value ""
+                }
+                
+                $newResult.newFiles += @{
+                    HashResult = $reservedHashResult
+                    Status = "RESERVED_NAME_SKIPPED"
+                    IsError = $false
+                }
+                continue
+            }
             
             # Check if this is a new file
             
@@ -2235,6 +2284,11 @@ function Process-ReportMode {
                 $excludedFilesCount++
                 continue
             }
+			
+			# Skip reserved names
+            if ($hash.HashStatus -eq "RESERVED_NAME_SKIPPED") {
+                continue
+            }
             
             # Check if file exists
             if (-not (Test-Path -LiteralPath $longFilePath -PathType Leaf)) {
@@ -2310,6 +2364,11 @@ function Process-ReportMode {
             
             # Skip excluded files
             if ($Exclusions.Count -gt 0 -and (Test-ExclusionMatch -Path $file.FullName -Exclusions $Exclusions)) {
+                continue
+            }
+			
+			# Skip reserved names
+            if (Test-IsReservedFilename -FileName $file.Name) {
                 continue
             }
             
@@ -2408,6 +2467,7 @@ function Start-FileProcessing {
     $excludedCount = 0
     $reincludedCount = 0
     $symlinkCount = 0
+	$skippedCount = 0
     $filesInHashesFoldersCount = 0
     $resultMessage = ""
     $results = @()  # Array to store all results in memory
@@ -2781,6 +2841,17 @@ function Start-FileProcessing {
                             Write-Log -Message "Processed $fileCount files ($($rate.ToString('0.0')) files/sec)" -LogFilePath $logFilePath -ForegroundColor Yellow -Force $true
                         }
                         
+						 # ---> Catch reserved Windows filenames <---
+                        if (Test-IsReservedFilename -FileName $file.Name) {
+							$skippedCount++
+                            $errorMessage = "Windows reserved filename. Cannot be read or processed reliably."
+                            $newResult = New-HashResult -FilePath $file.FullName -FileInfo $file -IsError $false -ErrorMessage "" -BaseDirectory $normalizedDirectoryPath -Status "RESERVED_NAME_SKIPPED" -Comment $errorMessage -Algorithms $algorithms
+                            $null = $results.Add($newResult)
+                            
+                            Write-Log -Message "Skipped Windows reserved filename: $normalizedFullName" -LogFilePath $logFilePath -ForegroundColor Yellow -Status "SKIPPED" -Force $true
+                            return  # Skip to next file
+                        }
+						
                         try {
                             # Calculate all hashes in one file read
                             $hashes = Get-MultipleFileHashes -FilePath $file.FullName -Algorithms $algorithms -LogFilePath $LogFilePath
@@ -2837,6 +2908,7 @@ function Start-FileProcessing {
                     Write-Log -Message "----------------------------------------------" -LogFilePath $logFilePath -ForegroundColor Cyan
                     Write-Log -Message "Scan complete!" -LogFilePath $logFilePath -ForegroundColor Green
                     Write-Log -Message "Total files processed: $fileCount" -LogFilePath $logFilePath -ForegroundColor Cyan
+					Write-Log -Message "Files skipped: $skippedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                     Write-Log -Message "Files excluded: $excludedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                     Write-Log -Message "Skipped $filesInHashesFoldersCount files that are in PowerDirHasher hash folders" -LogFilePath $LogFilePath -ForegroundColor Cyan
                     Write-Log -Message "Symlinks skipped: $symlinkCount" -LogFilePath $logFilePath -ForegroundColor Cyan
@@ -2849,7 +2921,7 @@ function Start-FileProcessing {
                 
 
                     # Write the hash results file using Create-HashOutputFile
-                    $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ExcludedCount $excludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
+                    $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -SkippedCount $skippedCount -ExcludedCount $excludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
                    
                     $resultMessage = "Hash operation completed successfully"
                     # If there were file access errors we still consider it successful but the message will be different
@@ -2931,6 +3003,7 @@ function Start-FileProcessing {
                             "DELETED" { $deletedCount++ }
                             "EXCLUDED" { $excludedCount++ }
                             "REINCLUDED" { $reincludedCount++ }
+							"RESERVED_NAME_SKIPPED" { $skippedCount++ }
                             "MODIFIED_DATE_SIZE" { $modifiedCount++ }
                             "MODIFIED_ONLY_DATE" { $modifiedCount++ }
                             "ALERT_MODIFIED_ONLY_SIZE" { $modifiedCount++ }
@@ -2987,13 +3060,17 @@ function Start-FileProcessing {
                     foreach ($newResult in $newFileResults.NewFiles) {
                         # Use ArrayList.Add() method instead of +=
                         $null = $results.Add($newResult.HashResult)
-                        $addedCount++
+                        if ($newResult.Status -eq "RESERVED_NAME_SKIPPED") {
+                            $skippedCount++
+                        } else {
+                            $addedCount++
+                        }
                         $fileCount++
                     }
                 }
                 
                 # Write hash results file using Create-HashOutputFile
-                $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ModifiedCount $modifiedCount -DeletedCount $deletedCount -IdenticalCount $identicalCount -CorruptedCount $corruptedCount -ExcludedCount $excludedCount -ReincludedCount $reincludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -ReferenceHashFile $(if ($latestHashesFile) { $latestHashesFile.Name } else { "" }) -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
+                $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ModifiedCount $modifiedCount -DeletedCount $deletedCount -IdenticalCount $identicalCount -CorruptedCount $corruptedCount -SkippedCount $skippedCount -ExcludedCount $excludedCount -ReincludedCount $reincludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -ReferenceHashFile $(if ($latestHashesFile) { $latestHashesFile.Name } else { "" }) -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
                 
                 # Summarize results
                 Write-Log -Message "----------------------------------------------" -LogFilePath $logFilePath -ForegroundColor Cyan
@@ -3004,6 +3081,7 @@ function Start-FileProcessing {
                 Write-Log -Message "Files modified: $modifiedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files touched: $touchedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files deleted: $deletedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
+				Write-Log -Message "Files skipped: $skippedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files excluded: $excludedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files reincluded: $reincludedCount" -LogFilePath $logFilePath -ForegroundColor Cyan
                 Write-Log -Message "Files corrupted: $corruptedCount" -LogFilePath $logFilePath -ForegroundColor $(if ($corruptedCount -gt 0) { "Red" } else { "Green" })
@@ -3078,12 +3156,14 @@ function Start-FileProcessing {
             
             if ($fileCount -gt 0) {
                 "# Total files processed: $fileCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+				"# Files skipped: $skippedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                 
                 if ($Mode -ne "Hash") {
                     "# Files identical: $identicalCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                     "# Files added: $addedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                     "# Files modified: $modifiedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                     "# Files deleted: $deletedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
+					"# Files skipped: $skippedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                     "# Files excluded: $excludedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                     "# Files reincluded: $reincludedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
                     "# Files corrupted: $corruptedCount" | Out-File -LiteralPath $logFilePath -Append -Encoding UTF8
