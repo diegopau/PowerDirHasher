@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "1.0.1"
+$scriptVersion = "1.0.2"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -1871,6 +1871,27 @@ function Process-ExistingFileHash {
     # Get the file's full path by combining directory path and relative path
     $filePath = Join-Path -Path $DirectoryPath -ChildPath $FileHash.FilePath
     $longPath = Get-LongPath -Path $filePath
+	
+	# Force reserved names to the correct status immediately
+    $fileNameOnly = [System.IO.Path]::GetFileName($filePath)
+    if (Test-IsReservedFilename -FileName $fileNameOnly) {
+        if ($FileHash.HashStatus -ne "RESERVED_NAME_SKIPPED") {
+            Write-Log -Message "Auto-corrected old entry to reserved Windows name: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -IsPreviouslyAdded $true
+        } else {
+            Write-Log -Message "File remains skipped due to reserved Windows name: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -IsPreviouslyAdded $true
+        }
+        
+        $newHashResult = $FileHash.PSObject.Copy()
+        $newHashResult.HashStatus = "RESERVED_NAME_SKIPPED"
+        $newHashResult.Comments = "Windows reserved filename. Cannot be read or processed reliably."
+        
+        return @{
+            HashResult = $newHashResult
+            Status = "RESERVED_NAME_SKIPPED"
+            IsError = $false
+            ErrorMessage = ""
+        }
+    }
     
     # Check if the file should be excluded by the current exclusions
     if ($Exclusions.Count -gt 0 -and $FileHash.HashStatus -ne "EXCLUDED") {
@@ -1935,15 +1956,6 @@ function Process-ExistingFileHash {
         "EXCLUDED" {
             return Process-ExcludedFile -FileHash $FileHash -LogFilePath $LogFilePath
         }
-		"RESERVED_NAME_SKIPPED" {
-            Write-Log -Message "File remains skipped due to reserved Windows name: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -IsPreviouslyAdded $true
-            return @{
-                HashResult = $FileHash.PSObject.Copy()
-                Status = "RESERVED_NAME_SKIPPED"
-                IsError = $false
-                ErrorMessage = ""
-            }
-        }
         "DELETED" {
             return Process-DeletedFile -FileHash $FileHash -FilePath $filePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         }
@@ -1951,22 +1963,6 @@ function Process-ExistingFileHash {
             return Process-ErroredFile -FileHash $FileHash -FilePath $filePath -Algorithms $Algorithms -LogFilePath $LogFilePath
         }
         default {
-			
-			# Auto-heal old entries that were previously hashed. This is because in previous version some windows reserved file names could have been hashes but in recent versions of PowerDirHasher they are always skipped to avoid problems.
-            if (Test-IsReservedFilename -FileName [System.IO.Path]::GetFileName($filePath)) {
-                Write-Log -Message "Auto-corrected old entry to reserved Windows name: $($FileHash.FilePath)" -LogFilePath $LogFilePath -ForegroundColor Yellow -Status "SKIPPED" -IsPreviouslyAdded $true
-                
-                $newHashResult = $FileHash.PSObject.Copy()
-                $newHashResult.HashStatus = "RESERVED_NAME_SKIPPED"
-                $newHashResult.Comments = "Windows reserved filename. Auto-corrected from previous scan."
-                
-                return @{
-                    HashResult = $newHashResult
-                    Status = "RESERVED_NAME_SKIPPED"
-                    IsError = $false
-                    ErrorMessage = ""
-                }
-            }
 			
             # Check if the file exists in the filesystem
             if (-not (Test-Path -LiteralPath $longPath -PathType Leaf)) {
