@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "1.0.2"
+$scriptVersion = "1.0.3"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -2957,7 +2957,17 @@ function Start-FileProcessing {
                 }
                 catch {
                     $errorMessage = $_.Exception.Message
+                    # Diagnostics: the message alone is useless for enumerator-level failures.
+                    # Capture exception type, the offending item, the throwing line and the script stack.
+                    $exType      = $_.Exception.GetType().FullName
+                    $exTarget    = if ($null -ne $_.TargetObject) { $_.TargetObject } else { "(no target object)" }
+                    $exLine      = $_.InvocationInfo.ScriptLineNumber
+                    $exStatement = if ($_.InvocationInfo.Line) { $_.InvocationInfo.Line.Trim() } else { "(no statement)" }
+                    $exStack     = $_.ScriptStackTrace
                     Write-Log -Message "CRITICAL ERROR: File processing failed: $errorMessage" -LogFilePath $logFilePath -ForegroundColor Red
+                    Write-Log -Message "CRITICAL ERROR DETAIL: Type=$exType | Target=$exTarget | ScriptLine=$exLine | Statement=$exStatement" -LogFilePath $logFilePath -ForegroundColor Red
+                    Write-Log -Message "CRITICAL ERROR STACK: $exStack" -LogFilePath $logFilePath -ForegroundColor Red
+                    Write-Log -Message "CRITICAL ERROR CONTEXT: Files counted=$fileCount | Last subfolder=$currentSubfolder" -LogFilePath $logFilePath -ForegroundColor Red
                     Mark-ScriptFailed
                     throw "File processing failed: $errorMessage"
                 }
@@ -3597,7 +3607,17 @@ function Start-SingleFileProcessing {
                 }
                 catch {
                     $errorMessage = $_.Exception.Message
+                    # Diagnostics: the message alone is useless for enumerator-level failures.
+                    # Capture exception type, the offending item, the throwing line and the script stack.
+                    $exType      = $_.Exception.GetType().FullName
+                    $exTarget    = if ($null -ne $_.TargetObject) { $_.TargetObject } else { "(no target object)" }
+                    $exLine      = $_.InvocationInfo.ScriptLineNumber
+                    $exStatement = if ($_.InvocationInfo.Line) { $_.InvocationInfo.Line.Trim() } else { "(no statement)" }
+                    $exStack     = $_.ScriptStackTrace
                     Write-Log -Message "CRITICAL ERROR: File processing failed: $errorMessage" -LogFilePath $logFilePath -ForegroundColor Red
+                    Write-Log -Message "CRITICAL ERROR DETAIL: Type=$exType | Target=$exTarget | ScriptLine=$exLine | Statement=$exStatement" -LogFilePath $logFilePath -ForegroundColor Red
+                    Write-Log -Message "CRITICAL ERROR STACK: $exStack" -LogFilePath $logFilePath -ForegroundColor Red
+                    Write-Log -Message "CRITICAL ERROR CONTEXT: Files counted=$fileCount | Last subfolder=$currentSubfolder" -LogFilePath $logFilePath -ForegroundColor Red
                     Mark-ScriptFailed
                     throw "File processing failed: $errorMessage"
                 }
