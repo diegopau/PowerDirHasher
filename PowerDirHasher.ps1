@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "1.0.3"
+$scriptVersion = "1.1.1"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -782,8 +782,11 @@ function Write-Log {
     if ($shouldLogToFile -and -not [string]::IsNullOrEmpty($LogFilePath)) {
         # if this is part of a .hashtask operation we never log to file, instead we capture the data
         if ($script:operationPathType -eq "HashTask"){
-            # Store in memory array instead of writing to file
-            $script:logOutputCapture += "$timestamp - $Message"
+            # Store in memory list instead of writing to file.
+            # .Add() on a List[string] is amortised O(1). The previous "+=" on a plain array
+            # allocated a brand new array and copied every existing element on EVERY log line.
+            # See the initialisation of $script:logOutputCapture for why that matters here.
+            $script:logOutputCapture.Add("$timestamp - $Message")
         } elseif ($script:operationPathType -eq "Directory") {
             "$timestamp - $Message" | Out-File -LiteralPath $LogFilePath -Append -Encoding UTF8
         } else {
@@ -1980,10 +1983,19 @@ function Process-ExistingFileHash {
 function Find-NewFiles {
     param (
         [string]$DirectoryPath,
-        [string[]]$ExistingFilePaths,
+        # NOTE: deliberately untyped. This receives a System.Collections.Generic.HashSet[string]
+        # built with OrdinalIgnoreCase (see the caller in Start-FileProcessing). Do NOT restore a
+        # [string[]] type hint here: PowerShell would silently coerce the HashSet back into a plain
+        # array on parameter binding, reintroducing the O(n^2) membership test that made a 1.28M
+        # file folder take many hours in this phase alone.
+        $ExistingFilePaths,
         [string[]]$Algorithms,
         [string]$LogFilePath,
-        [string[]]$Exclusions = @()
+        [string[]]$Exclusions = @(),
+        # Label printed in the progress lines so the log makes clear which phase of the operation
+        # is running. VerifySync runs this function as its second phase, after the verify pass,
+        # and both phases have their own independent counters.
+        [string]$OperationLabel = "SYNC-SCAN"
     )
     
     $normalizedDirectoryPath = Ensure-TrailingBackslash $DirectoryPath
@@ -2001,6 +2013,10 @@ function Find-NewFiles {
         Message = ""
     }
     
+    if ($null -eq $ExistingFilePaths) {
+        throw "Find-NewFiles requires a HashSet of existing paths; received null."
+    }
+	
     # Find all files in the directory recursively
     try {
         Write-Log -Message "Scanning for new files in $DirectoryPath..." -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
@@ -2048,13 +2064,13 @@ function Find-NewFiles {
                 
                 if ($relativeFolder -ne $currentSubfolder) {
                     $currentSubfolder = $relativeFolder
-                    Write-Log -Message "Processing subfolder: $relativeFolder" -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
+                    Write-Log -Message "Processing subfolder ($OperationLabel): $relativeFolder" -LogFilePath $LogFilePath -ForegroundColor Cyan -Force $true
                 }
             }
             
             # Show progress periodically
             if ($processedCount % $script:logSettings.ShowProcessedFileCountEach -eq 0) {
-                Write-Log -Message "Processed $processedCount of $totalFileCount files" -LogFilePath $LogFilePath -ForegroundColor Yellow -Force $true
+                Write-Log -Message "Processed ($OperationLabel) $processedCount of $totalFileCount files" -LogFilePath $LogFilePath -ForegroundColor Yellow -Force $true
             }
             
             # Skip files in the hashes directory
@@ -2106,7 +2122,10 @@ function Find-NewFiles {
             
             # Check if this is a new file
             
-            if ($ExistingFilePaths -notcontains $normalizedFilePath) {
+            # HashSet.Contains() is O(1): it hashes the path once and probes a single bucket.
+            # The previous "-notcontains" was a linear scan of the whole array for every single
+            # file on disk, making this loop O(n^2) and unusable past roughly 500k files.
+            if (-not $ExistingFilePaths.Contains($normalizedFilePath)) {
 				
 				 # Catch reserved Windows filenames
 				if (Test-IsReservedFilename -FileName $file.Name) {
@@ -2285,13 +2304,17 @@ function Process-ReportMode {
         # Read the latest hashes file
         $existingHashes = Read-HashesFile -FilePath $LatestHashesFile.FullName
         
-        # Get all existing file paths from the hashes file
-        $existingFilePaths = @()
+        # Get all existing file paths from the hashes file.
+        # HashSet + OrdinalIgnoreCase for the same reason as in Find-NewFiles: the membership test
+        # further down runs once per file on disk. On top of that, the old "$existingFilePaths += "
+        # was itself O(n^2), because += on a PowerShell array reallocates and copies the whole
+        # array on every single iteration.
+        $existingFilePaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 
         foreach ($hash in $existingHashes) {
             $filePath = Join-Path -Path $DirectoryPath -ChildPath $hash.FilePath
             $longFilePath = Get-LongPath -Path $filePath
-            $existingFilePaths += $filePath
+            $null = $existingFilePaths.Add($filePath)
             
             # Skip excluded files
             if ($hash.HashStatus -eq "EXCLUDED") {
@@ -2388,7 +2411,8 @@ function Process-ReportMode {
             
             # Check if this is a new file
 
-            if ($existingFilePaths -notcontains $normalizedFilePath) {
+            # See the HashSet construction above: O(1) lookup instead of a full array scan per file.
+            if (-not $existingFilePaths.Contains($normalizedFilePath)) {
                 $newFilesCount++
                 $relativePath = Get-RelativePath -FullPath $file.FullName -BasePath $NormalizedDirectoryPath
                 Write-Log -Message "New file: $relativePath" -LogFilePath $LogFilePath -ForegroundColor Green
@@ -2457,11 +2481,23 @@ function Start-FileProcessing {
         [string]$TaskFilePath = ""
     )
     
-    # For tracking current subfolder
-    $currentSubfolder = ""
+    # For tracking current subfolder, so a "Processing subfolder" line is printed only when the
+    # folder actually changes. Used ONLY by the filesystem-ordered scans (the Hash branch here and
+    # Find-NewFiles), which walk the disk in recursion order. The VERIFY / SYNC record loop
+    # deliberately does not track subfolders - see the long comment inside that loop for why.
+    # $null rather than "" so it can never accidentally equal a real folder value on the first
+    # comparison. Also read by the critical-error handler to report where processing got to.
+    $currentSubfolder = $null
 
     # For capturing log output in memory when called from task processor
-    $script:logOutputCapture = @()
+    # List[string] rather than @(). This is appended to once per logged line by Write-Log when
+    # running under a .hashtask, which on a folder with 1M+ files means tens of thousands of
+    # appends. With a plain array, "+=" reallocates and copies the whole array each time; once
+    # the array passes roughly 10,600 entries each of those copies lands on the .NET Large
+    # Object Heap, which is not compacted by default. Because each new allocation is larger
+    # than the block just freed, the freed space can never be reused and the heap only grows.
+    # List[string] grows by amortised doubling instead, so there is no per-append reallocation.
+    $script:logOutputCapture = New-Object 'System.Collections.Generic.List[string]'
     
     # Configuration - use script variables instead of hardcoded values
     $directoryPath = $DirectoryPath
@@ -2800,7 +2836,7 @@ function Start-FileProcessing {
                             
                             if ($relativeFolder -ne $currentSubfolder) {
                                 $currentSubfolder = $relativeFolder
-                                Write-Log -Message "Processing subfolder: $relativeFolder" -LogFilePath $logFilePath -ForegroundColor Cyan -Force $true
+                                Write-Log -Message "Processing subfolder (HASH): $relativeFolder" -LogFilePath $logFilePath -ForegroundColor Cyan -Force $true
                             }
                         }
                         
@@ -2852,7 +2888,15 @@ function Start-FileProcessing {
                         if ($fileCount % $script:logSettings.ShowProcessedFileCountEach -eq 0) {
                             $elapsed = ((Get-Date).ToUniversalTime()) - $startTime
                             $rate = $fileCount / $elapsed.TotalSeconds
-                            Write-Log -Message "Processed $fileCount files ($($rate.ToString('0.0')) files/sec)" -LogFilePath $logFilePath -ForegroundColor Yellow -Force $true
+                            # $estimatedCount comes from the pre-scan at the top of this branch. It is
+                            # deliberately called an estimate and must not be treated as a target:
+                            #  - it counts files that are later skipped and never reach $fileCount
+                            #    (hash folders, symlinks, exclusions, reserved names), so the final
+                            #    $fileCount is normally somewhat LOWER;
+                            #  - the tree can change between the pre-scan and the end of the run, so
+                            #    $fileCount can also legitimately end up HIGHER.
+                            # It exists purely to give a sense of how far into the folder we are.
+                            Write-Log -Message "Processed (HASH) $fileCount files of the estimated $estimatedCount files ($($rate.ToString('0.0')) files/sec)" -LogFilePath $logFilePath -ForegroundColor Yellow -Force $true
                         }
                         
 						 # ---> Catch reserved Windows filenames <---
@@ -2990,6 +3034,20 @@ function Start-FileProcessing {
             default {
                 # For VerifyPartialSync, Sync, and VerifySync modes
                 
+                # Label used in the progress lines of this branch.
+                # IMPORTANT CONTEXT: this branch runs in TWO sequential phases, each with its own
+                # independent counter starting again from zero:
+                #   phase 1 - walk every record of the existing .hashes file (the loop below);
+                #   phase 2 - for Sync/VerifySync only, scan the disk for new files (Find-NewFiles).
+                # Before the label was added, both phases printed a bare "Processed X of Y files",
+                # which on a 1M+ file folder looked exactly like the operation had restarted itself.
+                $phaseLabel = switch ($Mode) {
+                    "VerifySync"        { "VERIFY" }
+                    "VerifyPartialSync" { "VERIFY-PARTIAL" }
+                    "Sync"              { "SYNC-CHECK" }
+                    default             { $Mode.ToUpper() }
+                }
+                
                 # Read the latest hashes file
                 $existingHashes = Read-HashesFile -FilePath $latestHashesFile.FullName
                 
@@ -3007,9 +3065,34 @@ function Start-FileProcessing {
                 foreach ($fileHash in $existingHashes) {
                     $processedFiles++
                     
+                    # Periodic orientation message, replacing the per-subfolder lines that the
+                    # filesystem-ordered scans print.
+                    #
+                    # WHY THERE IS NO "Processing subfolder" LINE IN THIS LOOP - do not add one back:
+                    # this loop does not walk the disk, it walks the records of the existing .hashes
+                    # file in the order they are stored. That order matches the folder structure only
+                    # for a folder that has been hashed once and never synced, because every SYNC
+                    # APPENDS newly found files to the END of the .hashes file rather than merging
+                    # them into tree order. So on any folder with some history the tail of the file
+                    # revisits folders already passed, and a subfolder line here would print folders
+                    # in an order that looks broken while being perfectly correct.
+                    #
+                    # What this prints instead is the one thing the progress counter cannot tell you:
+                    # WHICH item is being processed (in the case of a Hashtask). On a million-record folder the terminal
+                    # scrollback is long gone and every visible line is an identical-looking count,
+                    # with nothing identifying the .hashtask item it belongs to.
+                    #
+                    # Printed at the first record so that small folders and every item of a .hashtask
+                    # get it too, then repeated every 5000 records so any screenful is self-explanatory.
+                    # Change the 5000 below if the reminder is too frequent or too sparse.
+                    if ($processedFiles -eq 1 -or $processedFiles % 5000 -eq 0) {
+                        Write-Log -Message "[$phaseLabel] (this reminder repeats every 5000 files) Now working on: $directoryPath" -LogFilePath $logFilePath -ForegroundColor Magenta -Force $true
+                        Write-Log -Message "[$phaseLabel] Subfolder names are not shown during this phase. It reads the existing .hashes file row by row in stored order, and because every SYNC appends newly found files to the end of that file, stored order drifts away from folder order over time. Subfolder names ARE shown again during the later scan for new files, which does follow the folder structure." -LogFilePath $logFilePath -ForegroundColor Magenta -Force $true
+                    }
+                    
                     # Show progress every X files (as set in the .ini)
                     if ($processedFiles % $script:logSettings.ShowProcessedFileCountEach -eq 0) {
-                        Write-Log -Message "Processed $processedFiles of $totalFilesInHash files" -LogFilePath $logFilePath -ForegroundColor Yellow
+                        Write-Log -Message "Processed ($phaseLabel) $processedFiles of $totalFilesInHash files" -LogFilePath $logFilePath -ForegroundColor Yellow
                     }
                     
                     $result = Process-ExistingFileHash -FileHash $fileHash -Mode $Mode -DirectoryPath $directoryPath -Algorithms $algorithms -LogFilePath $logFilePath -Exclusions $Exclusions
@@ -3062,11 +3145,24 @@ function Start-FileProcessing {
                 if ($Mode -eq "VerifySync" -or $Mode -eq "Sync") {
                     Write-Log -Message "Scanning for new files..." -LogFilePath $logFilePath -ForegroundColor Cyan
                     
-                    # Get all existing file paths from the hashes file
-                    $existingFilePaths = $existingHashes | ForEach-Object { Join-Path -Path $directoryPath -ChildPath $_.FilePath }
+                    # Get all existing file paths from the hashes file.
+                    # Built as a case-insensitive HashSet rather than a plain array: Find-NewFiles
+                    # performs one membership test per file found on disk, so an array makes that
+                    # scan O(n^2). This is what made the sync phase of a 1.28M file folder slower
+                    # than the entire verify pass that reads and hashes every byte on the disk.
+                    # OrdinalIgnoreCase reproduces the case-insensitive behaviour of the -notcontains
+                    # it replaces, and matches the OrdinalIgnoreCase path comparisons used elsewhere.
+                    $existingFilePaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+                    $syncBasePath = Ensure-TrailingBackslash $directoryPath
+                    foreach ($existingHashRecord in $existingHashes) {
+                        # Plain string concatenation instead of Join-Path: Join-Path is a cmdlet call
+                        # and is far too slow across 1M+ iterations. FilePath is always a relative
+                        # path with no leading backslash, so the result is byte-for-byte identical.
+                        $null = $existingFilePaths.Add($syncBasePath + $existingHashRecord.FilePath)
+                    }
                     
                     # Scan the directory for new files using the refactored Find-NewFiles
-                    $newFileResults = Find-NewFiles -DirectoryPath $directoryPath -ExistingFilePaths $existingFilePaths -Algorithms $algorithms -LogFilePath $logFilePath -Exclusions $Exclusions
+                    $newFileResults = Find-NewFiles -DirectoryPath $directoryPath -ExistingFilePaths $existingFilePaths -Algorithms $algorithms -LogFilePath $logFilePath -Exclusions $Exclusions -OperationLabel "SYNC-SCAN"
                     
                     # Check if the scan was successful
                     if (-not $newFileResults.Success) {
@@ -3092,6 +3188,14 @@ function Start-FileProcessing {
                         $fileCount++
                     }
                 }
+                
+                # The Hash branch above assigns these two immediately before its own call to
+                # Create-HashOutputFile, but this branch never did. With StrictMode off they bound
+                # silently to $null, so every VERIFY / SYNC / VERIFY-PARTIAL-SYNC .hashes file was
+                # written without its "# HashTask:" or "# Folder:" provenance line. Only the initial
+                # HASH files ever had one.
+                $sourceType = if ([string]::IsNullOrEmpty($TaskFilePath)) { "Directory" } else { "HashTask" }
+                $sourcePath = if ([string]::IsNullOrEmpty($TaskFilePath)) { $directoryPath } else { $TaskFilePath }
                 
                 # Write hash results file using Create-HashOutputFile
                 $null = Create-HashOutputFile -OutputHashFile $outputHashFile -Results $results -Mode $Mode -FileCount $fileCount -ErrorCount $errorCount -AddedCount $addedCount -ModifiedCount $modifiedCount -DeletedCount $deletedCount -IdenticalCount $identicalCount -CorruptedCount $corruptedCount -SkippedCount $skippedCount -ExcludedCount $excludedCount -ReincludedCount $reincludedCount -SymlinkCount $symlinkCount -Algorithms $algorithms -ScriptVersion $scriptVersion -LogFilePath $logFilePath -SourcePath $sourcePath -SourceType $sourceType -ReferenceHashFile $(if ($latestHashesFile) { $latestHashesFile.Name } else { "" }) -SetReadOnly $script:generalSettings.SetHashFilesReadOnly -Exclusions $Exclusions
@@ -3275,7 +3379,10 @@ function Start-SingleFileProcessing {
     
     
     # For capturing log output in memory when called from task processor
-    $script:logOutputCapture = @()
+    # List[string] rather than @(). See the matching comment in Start-FileProcessing: "+=" on a
+    # plain array reallocates and copies the entire array on every single append, which becomes
+    # Large Object Heap churn on large tasks. List[string] grows by amortised doubling instead.
+    $script:logOutputCapture = New-Object 'System.Collections.Generic.List[string]'
     
     # Configuration
     $logFolderPath = $script:logFolderPath
@@ -3304,6 +3411,15 @@ function Start-SingleFileProcessing {
         $fileName = $fileInfo.Name
         $parentDirectory = $fileInfo.Directory.FullName
         $normalizedParentDirectory = Get-NormalizedPath -Path $parentDirectory
+        
+        # Provenance for the .hashes header. Both branches further down pass -SourcePath and
+        # -SourceType to Create-HashOutputFile, but neither ever assigned them, so single-file
+        # .hashes files were written with no "# HashTask:" or "# Folder:" line at all. Set once
+        # here so it applies to Hash, Verify and Sync alike. For a task, the task file is the
+        # meaningful provenance; otherwise the folder the file lives in (the file's own name is
+        # already recorded in the CSV row itself, so repeating it in the header adds nothing).
+        $sourceType = if ([string]::IsNullOrEmpty($TaskFilePath)) { "Directory" } else { "HashTask" }
+        $sourcePath = if ([string]::IsNullOrEmpty($TaskFilePath)) { $normalizedParentDirectory } else { $TaskFilePath }
         
         # Create timestamp
         $timestamp = Get-FormattedTimestamp
@@ -4176,10 +4292,23 @@ function Start-TaskProcessing {
 
                 if (-not (Test-Path -LiteralPath $fullLongPath -PathType Leaf)) {
                     $fileResult.Status = "Failed"
-                    $fileResult.Message = "File does not exist"
                     $failedItems++
                     
-                    $message = "ERROR: File does not exist: $fullPath"
+                    # A FOLDER whose name ends in an extension (a Scrivener "Project.scriv" package,
+                    # a ".app" bundle, a ".bak" folder, and so on) looks like a file to the
+                    # "$itemPath.Contains('.')" test further up, because that test is the only
+                    # dot-based file/folder heuristic in the script. The item then lands here and
+                    # would otherwise report the flatly untrue "File does not exist".
+                    # Detect that case explicitly and tell the user what is actually wrong.
+                    if (Test-Path -LiteralPath $fullLongPath -PathType Container) {
+                        $fileResult.Message = "Item is a folder, not a file. Folder entries must end with '\'"
+                        $message = "ERROR: '$itemPath' is a FOLDER whose name ends in an extension, not a file. Add a trailing backslash to process it as a folder: '$itemPath\'"
+                    }
+                    else {
+                        $fileResult.Message = "File does not exist"
+                        $message = "ERROR: File does not exist: $fullPath"
+                    }
+                    
                     Write-Host $message -ForegroundColor Red
                     $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss UTC")
                     "$timestamp - $message" | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
@@ -4207,9 +4336,7 @@ function Start-TaskProcessing {
                     
                     # Write captured log output to consolidated log
                     if ($result.LogOutput) {
-                        $result.LogOutput | ForEach-Object {
-                            $_ | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
-                        }
+                        $result.LogOutput | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                     }
                     
                     # Update file result
@@ -4339,9 +4466,7 @@ function Start-TaskProcessing {
                 # Write captured log output to consolidated log
                 Write-Host "Adding log info to the file: $logFilePath" -ForegroundColor Cyan
                 if ($result.LogOutput) {
-                    $result.LogOutput | ForEach-Object {
-                        $_ | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
-                    }
+                    $result.LogOutput | Out-File -LiteralPath $consolidatedLogFilePath -Append -Encoding UTF8
                 }
                 
                 # Update directory result
@@ -4647,5 +4772,3 @@ if (($script:operationPathType -eq "HashTask") -or ($script:operationPathType -e
     Write-Host "The path type was not set correctly" -ForegroundColor Red
     exit 1
 }
-
-
