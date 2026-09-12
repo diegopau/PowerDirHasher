@@ -10,7 +10,7 @@ param (
 # ======================================================================
 
 # Script version - update this when making changes
-$scriptVersion = "1.1.1"
+$scriptVersion = "1.1.2"
 
 # Track script success/failure
 $global:scriptFailed = $false
@@ -3048,6 +3048,18 @@ function Start-FileProcessing {
                     default             { $Mode.ToUpper() }
                 }
                 
+                # Closing sentence of the periodic reminder printed inside the record loop below.
+                # Only Sync and VerifySync run the second, filesystem-ordered phase (Find-NewFiles);
+                # VerifyPartialSync has no such phase, so promising subfolder names "later" would be
+                # a plain lie for menu option 2. The condition below MUST stay identical to the one
+                # that actually gates the Find-NewFiles call further down, or this message will drift
+                # out of sync with what the operation really does.
+                $newFileScanNote = if ($Mode -eq "VerifySync" -or $Mode -eq "Sync") {
+                    "Subfolder names ARE shown again during the second phase of this operation, the scan for new files, which does follow the folder structure."
+                } else {
+                    "This operation has only this one phase and does not scan the folder for new files, so no subfolder names will be shown at any point during it."
+                }
+                
                 # Read the latest hashes file
                 $existingHashes = Read-HashesFile -FilePath $latestHashesFile.FullName
                 
@@ -3087,7 +3099,7 @@ function Start-FileProcessing {
                     # Change the 5000 below if the reminder is too frequent or too sparse.
                     if ($processedFiles -eq 1 -or $processedFiles % 5000 -eq 0) {
                         Write-Log -Message "[$phaseLabel] (this reminder repeats every 5000 files) Now working on: $directoryPath" -LogFilePath $logFilePath -ForegroundColor Magenta -Force $true
-                        Write-Log -Message "[$phaseLabel] Subfolder names are not shown during this phase. It reads the existing .hashes file row by row in stored order, and because every SYNC appends newly found files to the end of that file, stored order drifts away from folder order over time. Subfolder names ARE shown again during the later scan for new files, which does follow the folder structure." -LogFilePath $logFilePath -ForegroundColor Magenta -Force $true
+                        Write-Log -Message "[$phaseLabel] Subfolder names are not shown during this phase. It reads the existing .hashes file row by row in stored order, and because every SYNC appends newly found files to the end of that file, stored order drifts away from folder order over time. $newFileScanNote" -LogFilePath $logFilePath -ForegroundColor Magenta -Force $true
                     }
                     
                     # Show progress every X files (as set in the .ini)
